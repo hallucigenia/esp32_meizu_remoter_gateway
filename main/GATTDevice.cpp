@@ -59,6 +59,7 @@ void GATTDevice::BeginWait(esp_gattc_cb_event_t event, uint16_t handle){
 
 bool GATTDevice::Wait(uint32_t timeout_ms){
     bool received = m_lock->Wait(timeout_ms);
+    m_timedOut = !received;
     m_waiting = false;
     return received && m_status == ESP_GATT_OK;
 }
@@ -305,13 +306,16 @@ void GATTDevice::HandleEvent(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if,
             break;
         case ESP_GATTC_CLOSE_EVT:
             if(param->close.conn_id != m_connid) break;
-            Complete(event, param->close.status);
             m_connid = 0xffff;
             m_connectingState = GATTConnectionState::Idle;
+            Complete(event, param->close.status);
             break;
         case ESP_GATTC_DISCONNECT_EVT:
             if(param->disconnect.conn_id != m_connid) break;
             m_connectingState = GATTConnectionState::Idle;
+            // A physical disconnect can precede CLOSE. Preserve its connection
+            // identifier until CLOSE completes; do not release the next job early.
+            if(m_waiting && m_waitEvent == ESP_GATTC_CLOSE_EVT) break;
             m_connid = 0xffff;
             if(m_waiting){
                 m_status = ESP_GATT_ERROR;
@@ -393,7 +397,7 @@ bool GATTDevice::Read(GATTRemoteCharacteristic *characteristic){
     if(!characteristic || m_connectingState != GATTConnectionState::Connected) return false;
     BeginWait(ESP_GATTC_READ_CHAR_EVT, characteristic->GetHandle());
     if(!characteristic->Read()) {m_waiting = false; return false;}
-    if(!Wait(1000)){Close(); return false;}
+    if(!Wait(1000)){if(m_timedOut) Close(); return false;}
     return m_readlen > 0;
 }
 
@@ -401,7 +405,7 @@ bool GATTDevice::Write(GATTRemoteCharacteristic *characteristic, uint8_t *data, 
     if(!characteristic || m_connectingState != GATTConnectionState::Connected) return false;
     BeginWait(ESP_GATTC_WRITE_CHAR_EVT, characteristic->GetHandle());
     if(!characteristic->Write(data, length, response)) {m_waiting = false; return false;}
-    if(!Wait(1000)){Close(); return false;}
+    if(!Wait(1000)){if(m_timedOut) Close(); return false;}
     return true;
 }
 

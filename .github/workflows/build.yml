@@ -7,10 +7,11 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-      - name: Test IR transaction protocol
+      - name: Test IR, state ownership, recovery, and Wi-Fi
         run: |
-          g++ -std=c++11 -Wall -Wextra -Werror -fsanitize=address,undefined -I main main/IRProtocol.cpp tests/ir_protocol_test.cpp -o /tmp/ir_protocol_test
-          /tmp/ir_protocol_test
+          mkdir -p /tmp/meizu-cjson
+          docker run --rm --entrypoint tar espressif/idf:v4.3.7 -C /opt/esp/idf/components/json -cf - cJSON | tar -xf - -C /tmp/meizu-cjson
+          MEIZU_CJSON_DIR=/tmp/meizu-cjson/cJSON ASAN_OPTIONS=alloc_dealloc_mismatch=1:detect_leaks=1 tests/run-host.sh
       - name: Build with ESP-IDF 4.3.7
         run: |
           mkdir -p build-ack

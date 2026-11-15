@@ -28,7 +28,6 @@ const __attribute__((section(".rodata_custom_desc"))) esp_custom_app_desc_t cust
 
 Kernel kernel;
 
-static int g_wifi_reconnect = 0;
 
 void on_wifi_prov_gotip(){
     ESP_LOGI("main", "Successful to provisioning, reboot in 10 seconds");
@@ -38,15 +37,10 @@ void on_wifi_prov_gotip(){
 void on_wifi_connect(bool connected){
     if(connected){
         ESP_LOGI("main", "WiFi connected");
-        g_wifi_reconnect = 0;
         led_set_mode(LED_MODE_ON, 0);
     } 
     else {
         ESP_LOGI("main", "WiFi disconencted");
-        g_wifi_reconnect ++;
-        if(g_wifi_reconnect >= 30){
-            Kernel::Restart();
-        }
         led_set_mode(LED_MODE_OFF, 0);
     }
 }

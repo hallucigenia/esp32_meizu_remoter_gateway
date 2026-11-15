@@ -46,65 +46,53 @@ MEIZURemoter::~MEIZURemoter(){
     if(m_irFrames) vQueueDelete(m_irFrames);
 }
 
-bool MEIZURemoter::ReadAllInfo(MEIZURemoterInfo * pInfo){
+bool MEIZURemoter::ReadAllInfo(MEIZURemoterInfo *info){
     m_lockDevice.Lock();
-    bool temperature_received = false;
-    bool voltage_received = false;
-    if(pInfo->m_update == 0) pInfo->m_update = 1;
-    ESP_LOGI(LOG_TAG, "Begin update device at %s", pInfo->m_addr.toString().c_str());
-    if(Connect(pInfo->m_addr)){
-         GATTRemoteService * pService;
-        if(!pInfo->has_manufacturer()){
-            pService = GetService(infoUUID);
-            if(pService != nullptr){
-                GATTRemoteCharacteristic * pCh = pService->GetCharacteristic(manufacturerUUID);
-                if(pCh != nullptr){
-                    if(Read(pCh)){
-                        pInfo->update_manufacturer((char *)m_readbuff, m_readlen);
-                    }
-                }
-                pCh = pService->GetCharacteristic(modelUUID);
-                if(pCh != nullptr){
-                    if(Read(pCh)){
-                        pInfo->update_model((char *)m_readbuff, m_readlen);
-                    }
-                }
-                pCh = pService->GetCharacteristic(firmwareUUID);
-                if(pCh != nullptr){
-                    if(Read(pCh)){
-                        pInfo->update_firmware((char *)m_readbuff, m_readlen);
-                    }
-                }
+    bool measured = false;
+    if(Connect(info->m_addr)){
+        GATTRemoteService *service = GetService(infoUUID);
+        if(service){
+            if(!info->has_manufacturer()){
+                auto *ch = service->GetCharacteristic(manufacturerUUID);
+                if(Read(ch)) info->update_manufacturer((char *)m_readbuff,m_readlen);
+            }
+            if(!info->has_model()){
+                auto *ch = service->GetCharacteristic(modelUUID);
+                if(Read(ch)) info->update_model((char *)m_readbuff,m_readlen);
+            }
+            if(!info->has_firmware()){
+                auto *ch = service->GetCharacteristic(firmwareUUID);
+                if(Read(ch)) info->update_firmware((char *)m_readbuff,m_readlen);
             }
         }
-        pService = GetService(serviceUUID);
-        if(pService != nullptr){
-            GATTRemoteCharacteristic * pCh = pService->GetCharacteristic(characteristicUUID);
+        service = GetService(serviceUUID);
+        if(service){
+            auto *ch = service->GetCharacteristic(characteristicUUID);
             uint8_t sequence = NextSequence();
-            bool written = SendCommand(pCh, sequence, CMD_TEMP_HUMI);
-            bool read = written && Read(pCh);
-            if (read && m_readbuff[2] == sequence && m_readlen == 8 && m_readbuff[0] == 0x55 && m_readbuff[1] == 0x07 && m_readbuff[3] == CMD_TEMP_HUMI) {
-                pInfo->update_temperature(((m_readbuff[5] << 8) + m_readbuff[4]) / 100.0f);
-                pInfo->update_humidity(((m_readbuff[7] << 8) + m_readbuff[6]) / 100.0f);
-                temperature_received = true;
+            bool temperature = SendCommand(ch,sequence,CMD_TEMP_HUMI) && Read(ch) &&
+                m_readlen == 8 && m_readbuff[0] == 0x55 && m_readbuff[1] == 7 &&
+                m_readbuff[2] == sequence && m_readbuff[3] == CMD_TEMP_HUMI;
+            float temperature_value = 0,humidity_value = 0;
+            if(temperature){
+                temperature_value = ((m_readbuff[5] << 8) + m_readbuff[4]) / 100.0f;
+                humidity_value = ((m_readbuff[7] << 8) + m_readbuff[6]) / 100.0f;
             }
             sequence = NextSequence();
-            written = SendCommand(pCh, sequence, CMD_VOLTAGE);
-            read = written && Read(pCh);
-            if (read && m_readbuff[2] == sequence && m_readlen == 5 && m_readbuff[0] == 0x55 && m_readbuff[1] == 0x04 && m_readbuff[3] == CMD_VOLTAGE) {
-                pInfo->update_voltage(m_readbuff[4]);
-                voltage_received = true;
+            bool voltage = SendCommand(ch,sequence,CMD_VOLTAGE) && Read(ch) &&
+                m_readlen == 5 && m_readbuff[0] == 0x55 && m_readbuff[1] == 4 &&
+                m_readbuff[2] == sequence && m_readbuff[3] == CMD_VOLTAGE;
+            measured = temperature && voltage;
+            if(measured){
+                info->update_temperature(temperature_value);
+                info->update_humidity(humidity_value);
+                info->update_voltage(m_readbuff[4]);
             }
         }
-        if(temperature_received && voltage_received) pInfo->m_update = 0;
         Close();
-        ESP_LOGI(LOG_TAG, "Device at %s was updated", m_addr.toString().c_str());
     }
-    else{
-        ESP_LOGE(LOG_TAG, "Can not connect to device at %s", m_addr.toString().c_str());
-    }
+    ESP_LOGI(LOG_TAG,"Measurement %s for %s",measured ? "complete" : "failed",info->m_addr.toString().c_str());
     m_lockDevice.Unlock();
-    return pInfo->m_update == 0;
+    return measured;
 }
 
 IRResult MEIZURemoter::SendIRCode(BLEAddress addr, uint8_t *key, uint16_t keylen, uint8_t *ircode, uint16_t ircodelen){

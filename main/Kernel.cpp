@@ -1,267 +1,247 @@
-/*
- * Created by @georgezhao2010
- * https://github.com/georgezhao2010/esp32_meizu_remoter_gateway/
- * involute@sina.com
- */
+/* Created by @georgezhao2010; maintained by this fork. */
 #include <driver/gpio.h>
 #include <esp_log.h>
-#include <cJSON.h>
+#include <esp_system.h>
 #include <string.h>
-#include <list>
-#include <esp_pthread.h>
 #include <ctype.h>
+#include <limits>
 #include "led.h"
 #include "utils.h"
 #include "wifi.h"
 #include "nvsstorage.h"
 #include "mdnsmd.h"
 #include "Kernel.h"
-
-#define BLE_MAX_FIAILED_TIMES 5
 #define LOG_TAG "Kernel"
 
-const char * template_config_info = "{\"type\":\"config_info\",\"data\":{\"version\":\"%s\",\"serialno\":\"%s\", \"update_interval\":%d,\"capabilities\":[\"ir_ack_v1\"]}}";
-const char * boardcast_template_available = "{\"type\":\"update\",\"data\":{\"device\":\"%s\",\"available\":1,\"status\":%s}}";
-const char * boardcast_template_unavailable = "{\"type\":\"update\",\"data\":{\"device\":\"%s\",\"available\":0}}";
-const char * template_devices = "{\"type\":\"devices\",\"data\":{\"devices\":%s}}";
-const char * template_device = "{\"device\":\"%s\",\"available\":1,\"status\":%s},";
-const char * boardcast_template_setinterval = "{\"type\":\"setinterval\",\"data\":{\"update_interval\":%d}}";
-const char * boardcast_template_removebind = "{\"type\":\"removebind\",\"data\":{\"device\":\"%s\"}}";
-const char * bind_mode_successful = "{\"type\":\"bind\",\"data\":{\"status\":\"1\"}}";
-const char * bind_mode_failed = "{\"type\":\"bind\",\"data\":{\"status\":\"0\"}}";
-
-struct jud_param{
-    Kernel * pKernel;
-    MEIZURemoterInfo * pInfo;
-};
-
-Kernel::Kernel(){
-    m_mode = KernelMode::Normal;
-    m_timertik = 0;
-}
-
-Kernel::~Kernel(){
-
-}
-
-void Kernel::task_Restart(void * param){
-    led_set_mode(LED_MODE_FAST_BLINK, 0);
+Kernel::Kernel() {}
+void Kernel::task_Restart(void *){
+    led_set_mode(LED_MODE_FAST_BLINK,0);
     delay(10000);
     esp_restart();
 }
 
+bool Kernel::ValidAddress(const char *address){
+    if(!address || strlen(address) != 17) return false;
+    for(size_t i=0;i<17;++i)
+        if(i%3 == 2 ? address[i] != ':' : !isxdigit(static_cast<unsigned char>(address[i]))) return false;
+    return true;
+}
+char *Kernel::Reply(const char *type,cJSON *data){
+    if(!data) return nullptr;
+    cJSON *root = cJSON_CreateObject();
+    if(!root){cJSON_Delete(data);return nullptr;}
+    cJSON_AddStringToObject(root,"type",type);
+    cJSON_AddItemToObject(root,"data",data);
+    char *text = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    return text;
+}
+void Kernel::Wake(){if(m_worker) xTaskNotifyGive(m_worker);}
+
 bool Kernel::Init(){
-    gpio_set_direction(GPIO_NUM_0, GPIO_MODE_INPUT);
-    ESP_LOGI(LOG_TAG, "BLE initializing");
-    if(!GATTDevice::Init(this, OnBindModeChanged, OnDeviceFound, OnRSSIRead)){
-        ESP_LOGE(LOG_TAG, "Failed to BLE initialization");
-        return false;
-    }
+    gpio_set_direction(GPIO_NUM_0,GPIO_MODE_INPUT);
+    if(!GATTDevice::Init(this,OnBindModeChanged,OnDeviceFound,OnRSSIRead)) return false;
     int8_t threshold;
-    if(nvs_read_bindthrld(&threshold)){
-        GATTDevice::SetBindThreshold(threshold);
-        ESP_LOGI(LOG_TAG, "Bind RSSI threshold set to %d", threshold);
+    if(nvs_read_bindthrld(&threshold)) GATTDevice::SetBindThreshold(threshold);
+    if(!nvs_read_interval(&m_nUpdateInterval) || m_nUpdateInterval < 1 || m_nUpdateInterval > 30)
+        m_nUpdateInterval = CONFIG_DEFAULT_UPDATE_INTERVAL;
+    uint8_t count = 0;
+    if(nvs_read_addrcount(&count) && count){
+        std::vector<uint8_t> addresses(count * ESP_BD_ADDR_LEN);
+        size_t length = addresses.size();
+        if(nvs_read_addrs(addresses.data(),&length) && length == addresses.size()){
+            for(size_t i=0;i<count;++i){
+                MEIZURemoterInfo info;
+                info.m_addr = BLEAddress(addresses.data()+i*ESP_BD_ADDR_LEN);
+                info.m_generation = ++m_generation;
+                m_mapInfos.emplace(info.m_addr,info);
+                ESP_LOGI(LOG_TAG,"Loaded binding %s",info.m_addr.toString().c_str());
+            }
+        }else ESP_LOGE(LOG_TAG,"Invalid stored binding list");
     }
     m_pRemoterInterface = new MEIZURemoter();
-    uint8_t count;
-    if(nvs_read_addrcount(&count)){
-        esp_bd_addr_t * pAddres = (esp_bd_addr_t *)malloc(sizeof(esp_bd_addr_t) * count);
-        size_t len = count * ESP_BD_ADDR_LEN;
-        nvs_read_addrs((void *)pAddres, &len);
-        for(int n = 0; n < count; n++){
-            MEIZURemoterInfo * pInfo = new MEIZURemoterInfo();
-            pInfo->m_addr = BLEAddress(pAddres[n]);
-            m_mapInfos.insert(std::pair<BLEAddress, MEIZURemoterInfo*>(pInfo->m_addr, pInfo));
-            ESP_LOGI(LOG_TAG, "Binded device %s loaded", pInfo->m_addr.toString().c_str());
-        }
-        free(pAddres);
-    }
-    UpdateAllDevices(this);
-    if(!nvs_read_interval(&m_nUpdateInterval)){
-        m_nUpdateInterval = CONFIG_DEFAULT_UPDATE_INTERVAL;
-    }
-    m_server.SetCallback(this, OnClientMessage);
-    ESP_LOGI(LOG_TAG, "Start Listening on port %d", CONFIG_SOCKET_LISTEN_PORT);
-    if(!m_server.Listen(CONFIG_SOCKET_LISTEN_PORT)){
-        ESP_LOGE(LOG_TAG, "Failed to listening");
-        return false;
-    }
-    esp_pthread_cfg_t cfg = esp_pthread_get_default_config();
-    cfg.stack_size = (4 * 1024);
-    esp_pthread_set_cfg(&cfg);
-    esp_timer_create_args_t timer_conf = {
-        .callback = OnTimer,
-        .arg = this,
-        .dispatch_method = ESP_TIMER_TASK,
-        .name = "update_device_status",
-        .skip_unhandled_events = true
-    };
-    esp_err_t ret = esp_timer_create(&timer_conf, &m_timer);
-    if (ret != ESP_OK) {
-        ESP_LOGE(LOG_TAG, "Failed to create timer: %s", esp_err_to_name(ret));
-        return false;
-    }
-    return true;
+    // TCP becomes usable before the first (possibly offline) BLE probe.
+    m_server.SetCallback(this,OnClientMessage);
+    if(!m_server.Listen(CONFIG_SOCKET_LISTEN_PORT)) return false;
+    ESP_LOGI(LOG_TAG,"TCP ready before BLE probes");
+    return xTaskCreate(Worker,"ble_worker",8192,this,tskIDLE_PRIORITY+1,&m_worker) == pdPASS;
 }
 
 void Kernel::Loop(){
     uint16_t counter = 0;
-    esp_timer_start_periodic(m_timer, 60000 * 1000U); // 1 minute
     while(true){
         delay(200);
         if(gpio_get_level(GPIO_NUM_0) == 0){
-            counter ++;
-            if(counter == 10 && m_mode == KernelMode::Normal){
-                if(GATTDevice::StartScan()){
-                    m_mode = KernelMode::ReadyBind;
-                }
-            } else if (counter == 40) {
-                counter = 0;
-                bool pro;
-                wifi_provisioned(true, &pro);
-                nvs_clear_addrcount();
-                nvs_write_interval(0);
-                ESP_LOGI(LOG_TAG, "Config reset, reboot in 10 seconds");
-                Restart();
+            if(++counter == 10) StartBinding();
+            else if(counter == 40){
+                bool provisioned;
+                wifi_provisioned(true,&provisioned);
+                nvs_clear_addrcount();nvs_write_interval(0);
+                ESP_LOGI(LOG_TAG,"Config reset, reboot in 10 seconds");
+                Restart();counter = 0;
             }
-        } else {
-            counter = 0;
-        }
+        }else counter = 0;
     }
 }
 
-void * Kernel::UpdateAllDevices(void * param){
-    Kernel * pKernel = (Kernel *)param;
-    if(pKernel->m_mode == KernelMode::Normal){
-        pKernel->m_lock.Lock();
-        for(auto it: pKernel->m_mapInfos){
-            MEIZURemoterInfo * pInfo = it.second;
-            if(pInfo->m_update <= BLE_MAX_FIAILED_TIMES){
-                if(pInfo->m_update <= 0){
-                    pInfo->m_update = 1;
+void Kernel::Worker(void *parameter){
+    auto *kernel = static_cast<Kernel *>(parameter);
+    while(true){
+        std::shared_ptr<BleJob> job;
+        MEIZURemoterInfo probe;
+        BLEAddress binding;
+        bool have_probe = false,have_binding = false;
+        kernel->m_lock.Lock();
+        if(!kernel->m_jobs.empty()){
+            job = kernel->m_jobs.front();kernel->m_jobs.pop_front();
+            kernel->m_activeJob = job->kind == BleJob::IR ? "ir" : "learn";
+        }else if(!kernel->m_pendingBinds.empty()){
+            auto it = kernel->m_pendingBinds.begin();
+            binding = *it;kernel->m_pendingBinds.erase(it);have_binding = true;
+            kernel->m_activeJob = "bind";
+        }else if(kernel->m_mode == KernelMode::Normal){
+            uint64_t earliest = std::numeric_limits<uint64_t>::max(),now = Now();
+            for(const auto &entry:kernel->m_mapInfos){
+                if(entry.second.m_poll.Due(now) && entry.second.m_poll.next_attempt_ms < earliest){
+                    probe = entry.second;earliest = probe.m_poll.next_attempt_ms;have_probe = true;
                 }
-                pKernel->m_pRemoterInterface->ReadAllInfo(pInfo);
-                led_set_mode(LED_MODE_FAST_BLINK, 1);
-                pKernel->BoardcastInfo(pInfo);
             }
+            if(have_probe) kernel->m_activeJob = "poll";
         }
-        pKernel->m_lock.Unlock();
-    }
-    return nullptr;
-}
-
-void *  Kernel::JustUpdateDevices(void * param){
-    struct jud_param * pParam = (struct jud_param *)param;
-    if(pParam->pKernel->m_pRemoterInterface->ReadAllInfo(pParam->pInfo)){
-        pParam->pKernel->BoardcastInfo(pParam->pInfo);
-    }
-    delete pParam;
-    return nullptr;
-}
-
-void Kernel::OnTimer(void * param){
-    Kernel * pKernel = (Kernel *)param;
-    pKernel->m_timertik ++;
-    if(pKernel->m_timertik >= pKernel->m_nUpdateInterval){
-        pKernel->m_timertik = 0;
-        pthread_t tid;
-        pthread_create(&tid, NULL, UpdateAllDevices, pKernel);
-        pthread_detach(tid);
+        kernel->m_lock.Unlock();
+        if(job) kernel->RunJob(job);
+        else if(have_binding) kernel->BindDevice(binding);
+        else if(have_probe) kernel->PollDevice(probe);
+        else ulTaskNotifyTake(pdTRUE,pdMS_TO_TICKS(250));
+        kernel->m_lock.Lock();kernel->m_activeJob = "idle";kernel->m_lock.Unlock();
     }
 }
 
-void Kernel::OnBindModeChanged(void * pCaller, bool bBind){
-    Kernel * pKernel = (Kernel *)pCaller;
-    if(bBind){
-        pKernel->m_mode = KernelMode::Bind;
-        ESP_LOGI(LOG_TAG, "Binding mode started");
-        led_set_mode(LED_MODE_SLOW_BLINK, 0);
-    } else {
-        pKernel->m_mode = KernelMode::Normal;
-        ESP_LOGI(LOG_TAG, "Binding mode stoped");
-        if(wifi_connected()){
-            led_set_mode(LED_MODE_ON, 0);
+bool Kernel::Enqueue(const std::shared_ptr<BleJob> &job){
+    m_lock.Lock();
+    bool accepted = m_worker && m_mode == KernelMode::Normal && m_jobs.size() < 8;
+    if(accepted) m_jobs.push_back(job);
+    else job->result.status = !m_worker ? "worker_unavailable" :
+        (m_mode == KernelMode::Normal ? "queue_full" : "binding_in_progress");
+    m_lock.Unlock();
+    if(accepted) Wake();
+    return accepted;
+}
+IRResult Kernel::Await(const std::shared_ptr<BleJob> &job){
+    bool completed = job->completed.Wait(45000);
+    m_lock.Lock();
+    IRResult result = job->result;
+    if(!completed && job->state.phase != CommandState::Done){
+        result.status = job->state.CancelQueued() ? "queue_timeout" : "result_timeout";
+        result.confirmed = false;
+    }
+    m_lock.Unlock();
+    return result;
+}
+void Kernel::RunJob(const std::shared_ptr<BleJob> &job){
+    m_lock.Lock();
+    auto found = m_mapInfos.find(job->address);
+    bool bound = found != m_mapInfos.end() && found->second.m_generation == job->generation;
+    bool start = bound && job->state.Start(Now());
+    if(!start){
+        job->result.status = bound ? "queue_timeout" : "device_not_bound";
+        job->state.phase = CommandState::Done;
+        ++m_expiredJobs;
+    }
+    m_lock.Unlock();
+    if(start){
+        IRResult result;
+        if(job->kind == BleJob::IR){
+            result = m_pRemoterInterface->SendIRCode(job->address,job->key.data(),job->key.size(),
+                job->code.empty() ? nullptr : job->code.data(),job->code.size());
+            if(result.confirmed) led_set_mode(LED_MODE_FAST_BLINK,1);
+        }else{
+            m_pRemoterInterface->ReceiveIRCode(job->address);
+            result.status = "learning_finished";
         }
-        else{
-            led_set_mode(LED_MODE_OFF, 0);
-        }
+        m_lock.Lock();job->result = result;job->state.phase = CommandState::Done;m_lock.Unlock();
+    }
+    job->completed.Unlock();
+}
+
+void Kernel::PollDevice(MEIZURemoterInfo snapshot){
+    // No map mutex or network lock is held during radio operations. A concurrent
+    // unbind is safe: work owns a value copy and commits only to its generation.
+    bool success = m_pRemoterInterface->ReadAllInfo(&snapshot);
+    m_lock.Lock();
+    auto current = m_mapInfos.find(snapshot.m_addr);
+    bool retained = current != m_mapInfos.end() && current->second.m_generation == snapshot.m_generation;
+    if(retained){
+        snapshot.m_rssi = current->second.m_rssi;
+        snapshot.m_poll = current->second.m_poll;
+        if(success) snapshot.m_poll.Success(Now(),m_nUpdateInterval*60000U);
+        else snapshot.m_poll.Failure(Now());
+        current->second = snapshot;
+    }
+    m_lock.Unlock();
+    if(retained){
+        BoardcastInfo(snapshot);
+        ESP_LOGI(LOG_TAG,"Probe %s available=%d failures=%u next_ms=%llu",snapshot.m_addr.toString().c_str(),
+            snapshot.m_poll.available,snapshot.m_poll.failures,snapshot.m_poll.next_attempt_ms);
     }
 }
 
-void Kernel::OnRSSIRead(void * pCaller, esp_bd_addr_t * addr, int8_t rssi){
-    Kernel * pKernel = (Kernel *)pCaller;
-    BLEAddress bleaddr(*addr);
-    auto it = pKernel->m_mapInfos.find(bleaddr);
-    if(it != pKernel->m_mapInfos.end()){
-        it->second->m_rssi = rssi;
+void Kernel::BindDevice(BLEAddress address){
+    GATTDevice::StopScan();
+    m_lock.Lock();
+    auto found = m_mapInfos.find(address);
+    if(found == m_mapInfos.end()){
+        MEIZURemoterInfo info;info.m_addr = address;info.m_generation = ++m_generation;
+        m_mapInfos.emplace(address,info);SaveAddress();
+    }else found->second.m_poll.next_attempt_ms = 0;
+    m_lock.Unlock();
+    Wake();
+}
+bool Kernel::StartBinding(){
+    m_lock.Lock();bool ready = m_mode == KernelMode::Normal;
+    if(ready) m_mode = KernelMode::ReadyBind;
+    m_lock.Unlock();
+    if(!ready) return false;
+    if(GATTDevice::StartScan()) return true;
+    m_lock.Lock();m_mode = KernelMode::Normal;m_lock.Unlock();return false;
+}
+void Kernel::OnBindModeChanged(void *caller,bool binding){
+    auto *kernel = static_cast<Kernel *>(caller);
+    kernel->m_lock.Lock();kernel->m_mode = binding ? KernelMode::Bind : KernelMode::Normal;kernel->m_lock.Unlock();
+    led_set_mode(binding ? LED_MODE_SLOW_BLINK : (wifi_connected() ? LED_MODE_ON : LED_MODE_OFF),0);
+    kernel->Wake();
+}
+void Kernel::OnDeviceFound(void *caller,esp_bd_addr_t *address){
+    auto *kernel = static_cast<Kernel *>(caller);
+    kernel->m_lock.Lock();
+    if(kernel->m_mode == KernelMode::Bind && kernel->m_pendingBinds.empty()){
+        kernel->m_pendingBinds.insert(BLEAddress(*address));
+        kernel->m_mode = KernelMode::ReadyBind; // Accept exactly one puck per binding window.
     }
+    kernel->m_lock.Unlock();kernel->Wake();
+}
+void Kernel::OnRSSIRead(void *caller,esp_bd_addr_t *address,int8_t rssi){
+    auto *kernel = static_cast<Kernel *>(caller);
+    kernel->m_lock.Lock();auto found = kernel->m_mapInfos.find(BLEAddress(*address));
+    if(found != kernel->m_mapInfos.end()) found->second.m_rssi = rssi;
+    kernel->m_lock.Unlock();
 }
 
-void Kernel::OnDeviceFound(void * pCaller, esp_bd_addr_t * addr){
-    Kernel * pKernel = (Kernel *)pCaller;
-    
-    BLEAddress bleaddr(*addr);
-    MEIZURemoterInfo * pExistInfo = nullptr;
-    auto it = pKernel->m_mapInfos.find(bleaddr);
-    if(it == pKernel->m_mapInfos.end()){
-        pExistInfo = nullptr;
-    } else {
-        pExistInfo = it->second;
-    }
-    if(pExistInfo == nullptr){
-        led_set_mode(LED_MODE_FAST_BLINK, 2);
-        GATTDevice::StopScan();
-        ESP_LOGI(LOG_TAG, "Found a new device at %s, prepare to pairing", bleaddr.toString().c_str());
-        MEIZURemoterInfo * pInfo = new MEIZURemoterInfo();
-        pInfo->m_addr = bleaddr;
-        pKernel->m_lock.Lock();
-        pKernel->m_mapInfos.insert(std::pair<BLEAddress, MEIZURemoterInfo*>(pInfo->m_addr, pInfo));
-        pKernel->SaveAddress();
-        pKernel->m_lock.Unlock();
-        struct jud_param * pParam = new(struct jud_param);
-        pParam->pKernel = pKernel;
-        pParam->pInfo = pInfo;
-        pthread_t tid;
-        pthread_create(&tid, NULL, JustUpdateDevices, pParam);
-        pthread_detach(tid);
-    } else {
-        if(pExistInfo->m_update < BLE_MAX_FIAILED_TIMES){
-            ESP_LOGW(LOG_TAG, "Found a binded device at %s", bleaddr.toString().c_str());
-        } else {
-            led_set_mode(LED_MODE_FAST_BLINK, 2);
-            GATTDevice::StopScan();
-            pExistInfo->m_update = 1;
-            struct jud_param * pParam = new(struct jud_param);
-            pParam->pKernel = pKernel;
-            pParam->pInfo = pExistInfo;
-            pthread_t tid;
-            pthread_create(&tid, NULL, JustUpdateDevices, pParam);
-            pthread_detach(tid);
-        }
-    }
+cJSON *Kernel::DeviceJSON(const MEIZURemoterInfo &info,uint64_t now){
+    cJSON *data = cJSON_CreateObject();
+    if(!data) return nullptr;
+    BLEAddress address = info.m_addr;
+    cJSON_AddStringToObject(data,"device",address.toString().c_str());
+    cJSON_AddNumberToObject(data,"available",info.m_poll.available ? 1 : 0);
+    cJSON_AddNumberToObject(data,"failures",info.m_poll.failures);
+    cJSON_AddNumberToObject(data,"next_probe_in_ms",info.m_poll.next_attempt_ms > now ? info.m_poll.next_attempt_ms-now : 0);
+    if(info.m_poll.has_sample) cJSON_AddNumberToObject(data,"measurement_age_ms",now-info.m_poll.last_success_ms);
+    cJSON_AddItemToObject(data,"status",info.ToJSON());
+    return data;
 }
-
-void Kernel::BoardcastInfo(MEIZURemoterInfo * pInfo){
-    if(pInfo->m_update == 0){
-        char * json_status = pInfo->serialize_to_json();
-        ESP_LOGI(LOG_TAG, "successful to update device at %s: %s", pInfo->m_addr.toString().c_str(), json_status);
-        int len = strlen(boardcast_template_available) + strlen(json_status) + 18;
-        char * message = (char *)malloc(len);
-        sprintf(message, boardcast_template_available, pInfo->m_addr.toString().c_str(), json_status);
-        m_server.Boardcast(message, strlen(message));
-        free(message);
-    } else {
-        ESP_LOGE(LOG_TAG, "Failed to update device at %s for %d times", pInfo->m_addr.toString().c_str(), pInfo->m_update);
-        pInfo->m_update ++;
-        if(pInfo->m_update > BLE_MAX_FIAILED_TIMES){
-            ESP_LOGW(LOG_TAG, "Failed to update device at %s for many times and will be marked as unavailable.", pInfo->m_addr.toString().c_str());
-        }
-        int len = strlen(boardcast_template_available) + 18;
-        char * message = (char *)malloc(len);
-        sprintf(message, boardcast_template_unavailable, pInfo->m_addr.toString().c_str());
-        m_server.Boardcast(message, strlen(message));
-        free(message);
-    }
+void Kernel::BoardcastInfo(const MEIZURemoterInfo &info){
+    char *message = Reply("update",DeviceJSON(info,Now()));
+    if(message){m_server.Boardcast(message,strlen(message));free(message);}
 }
 
 void Kernel::OnClientMessage(void * pCaller, SocketClient * pClient, char * pMessage, int nLen){
@@ -274,6 +254,15 @@ void Kernel::OnClientMessage(void * pCaller, SocketClient * pClient, char * pMes
         if((jtype = cJSON_GetObjectItem(json, "type")) != nullptr && jtype->type == cJSON_String){
             if (strcmp(jtype->valuestring, "config_info") == 0) {
                 pReply = pKernel->process_message_configinfo();
+            } else if (strcmp(jtype->valuestring, "wifi_reconnect") == 0) {
+                cJSON *result = cJSON_CreateObject();
+                cJSON_AddBoolToObject(result,"accepted",wifi_request_reconnect());
+                pReply = Reply("wifi_reconnect",result);
+            } else if (strcmp(jtype->valuestring, "diagnostics") == 0) {
+                pReply = pKernel->process_message_diagnostics();
+            } else if (strcmp(jtype->valuestring, "refresh") == 0) {
+                data = cJSON_GetObjectItem(json,"data");
+                pReply = pKernel->process_message_refresh(data);
             } else if (strcmp(jtype->valuestring, "devices") == 0) {
                 pReply = pKernel->process_message_devices();
             } else if (strcmp(jtype->valuestring, "irsend") == 0) {
@@ -309,7 +298,7 @@ void Kernel::OnClientMessage(void * pCaller, SocketClient * pClient, char * pMes
     if(pReply != nullptr){
         int len = strlen(pReply);
         pKernel->m_server.SendMessage(pClient, pReply, len);
-        if(pReply != pMessage && pReply != bind_mode_successful && pReply != bind_mode_failed){
+        if(pReply != pMessage){
             free(pReply);
         }
     }
@@ -329,6 +318,7 @@ uint8_t * Kernel::ReadStreamFromASC(char * asc){
     }
     len /= 2;
     uint8_t * stream = (uint8_t *)malloc(len);
+    if(!stream) return nullptr;
     for(int n = 0; n < len; n++){
         uint8_t high, low;
         high = asc[2 * n];
@@ -364,202 +354,140 @@ uint8_t * Kernel::ReadStreamFromASC(char * asc){
     return stream;
 }
 
-char * Kernel::process_message_configinfo(){
-    const char * version = mdns_get_version();
-    const char * serialno = mdns_get_serial();
-    int len = strlen(template_config_info);
-    len += strlen(version);
-    len += strlen(serialno);
-    char * pMessage = (char *)malloc(len + 1);
-    sprintf(pMessage, template_config_info, version, serialno, m_nUpdateInterval);
-    return pMessage;
+char *Kernel::process_message_configinfo(){
+    cJSON *data = cJSON_CreateObject();
+    cJSON_AddStringToObject(data,"version",mdns_get_version());
+    cJSON_AddStringToObject(data,"serialno",mdns_get_serial());
+    m_lock.Lock();uint8_t interval = m_nUpdateInterval;m_lock.Unlock();
+    cJSON_AddNumberToObject(data,"update_interval",interval);
+    cJSON *caps = cJSON_AddArrayToObject(data,"capabilities");
+    for(const char *cap:{"ir_ack_v1","recovery_v1","measurement_age_v1","diagnostics_v1"})
+        cJSON_AddItemToArray(caps,cJSON_CreateString(cap));
+    return Reply("config_info",data);
 }
-
-char * Kernel::process_message_devices(){
-    int count = 0;
-    m_lock.Lock();
-    for(auto it: m_mapInfos){
-        if(it.second->m_update <= 1 && it.second->m_update >= 0){
-            count ++;
-        }
-    }
-    char * devices = (char *)malloc(count *(strlen(template_device) + 220) + 5);
-    devices[0] = '[';
-    count = 1;
-    for(auto it: m_mapInfos){
-        if(it.second->m_update <= 1){
-            if(it.second->m_update <= 1 && it.second->m_update >= 0){
-                int single = sprintf(devices + count, template_device, 
-                    it.second->m_addr.toString().c_str(), it.second->serialize_to_json());
-                count += single;
-            }
-        }
-    }
-    m_lock.Unlock();
-    if(count > 1){
-        count--;
-    }
-    devices[count] = ']';
-    devices[count + 1] = 0;
-    char * json = (char *)malloc(strlen(template_devices) + strlen(devices));
-    sprintf(json, template_devices, devices);
-    free(devices);
-    return json;
+char *Kernel::process_message_devices(){
+    std::vector<MEIZURemoterInfo> snapshots;
+    m_lock.Lock();for(const auto &entry:m_mapInfos) snapshots.push_back(entry.second);m_lock.Unlock();
+    cJSON *data = cJSON_CreateObject(),*devices = cJSON_AddArrayToObject(data,"devices");
+    uint64_t now = Now();
+    for(const auto &info:snapshots) cJSON_AddItemToArray(devices,DeviceJSON(info,now));
+    return Reply("devices",data);
 }
-
-char * Kernel::process_message_sendir(cJSON *data){
-    const int64_t started = esp_timer_get_time();
-    IRResult result;
-    result.status = "invalid_parameters";
-    cJSON *request = cJSON_GetObjectItem(data, "request_id");
-    cJSON *device = cJSON_GetObjectItem(data, "device");
-    cJSON *key = cJSON_GetObjectItem(data, "key");
-    cJSON *code = cJSON_GetObjectItem(data, "ircode");
-    const char *request_id = cJSON_IsString(request) ? request->valuestring : "";
-    const char *address = cJSON_IsString(device) ? device->valuestring : "";
-    bool valid_address = strlen(address) == 17;
-    for(size_t i = 0; valid_address && i < 17; ++i){
-        valid_address = i % 3 == 2 ? address[i] == ':' : isxdigit(static_cast<unsigned char>(address[i]));
-    }
-    // A caller-supplied identifier is echoed only as JSON data, never formatting.
-    if(strlen(request_id) <= 64 && valid_address && cJSON_IsString(key) &&
-            strlen(key->valuestring) == 18 && (!code || cJSON_IsString(code))){
-        BLEAddress addr(address);
-        m_lock.Lock();
-        bool found = m_mapInfos.find(addr) != m_mapInfos.end();
+char *Kernel::process_message_refresh(cJSON *data){
+    cJSON *device = cJSON_GetObjectItem(data,"device");
+    bool accepted = false;
+    if(cJSON_IsString(device) && ValidAddress(device->valuestring)){
+        m_lock.Lock();auto found = m_mapInfos.find(BLEAddress(device->valuestring));
+        if(found != m_mapInfos.end()){found->second.m_poll.next_attempt_ms = 0;accepted = true;}
         m_lock.Unlock();
-        if(!found){
-            result.status = "device_not_bound";
-        } else {
+    }
+    if(accepted) Wake();
+    cJSON *reply = cJSON_CreateObject();cJSON_AddBoolToObject(reply,"accepted",accepted);
+    return Reply("refresh",reply);
+}
+char *Kernel::process_message_diagnostics(){
+    cJSON *data = cJSON_CreateObject();
+    cJSON_AddNumberToObject(data,"uptime_ms",Now());
+    cJSON_AddNumberToObject(data,"reset_reason",esp_reset_reason());
+    cJSON_AddNumberToObject(data,"free_heap",esp_get_free_heap_size());
+    cJSON_AddNumberToObject(data,"minimum_free_heap",esp_get_minimum_free_heap_size());
+    m_lock.Lock();
+    cJSON_AddBoolToObject(data,"ble_worker_ready",m_worker != nullptr);
+    cJSON_AddStringToObject(data,"ble_active_job",m_activeJob);
+    cJSON_AddNumberToObject(data,"ble_queue_depth",m_jobs.size());
+    cJSON_AddNumberToObject(data,"expired_jobs",m_expiredJobs);
+    m_lock.Unlock();
+    wifi_diagnostics_t wifi;wifi_get_diagnostics(&wifi);
+    cJSON *network = cJSON_AddObjectToObject(data,"wifi");
+    cJSON_AddBoolToObject(network,"connected",wifi.connected);
+    cJSON_AddNumberToObject(network,"disconnects",wifi.disconnects);
+    cJSON_AddNumberToObject(network,"reconnect_attempts",wifi.reconnect_attempts);
+    cJSON_AddNumberToObject(network,"consecutive_failures",wifi.consecutive_failures);
+    cJSON_AddNumberToObject(network,"last_disconnect_reason",wifi.last_disconnect_reason);
+    cJSON_AddNumberToObject(network,"retry_in_ms",wifi.retry_in_ms);
+    return Reply("diagnostics",data);
+}
+char *Kernel::process_message_sendir(cJSON *data){
+    uint64_t started = Now();IRResult result;result.status = "invalid_parameters";
+    cJSON *request = cJSON_GetObjectItem(data,"request_id"),*device = cJSON_GetObjectItem(data,"device");
+    cJSON *key = cJSON_GetObjectItem(data,"key"),*code = cJSON_GetObjectItem(data,"ircode");
+    const char *id = cJSON_IsString(request) ? request->valuestring : "";
+    const char *address = cJSON_IsString(device) ? device->valuestring : "";
+    if(strlen(id) <= 64 && ValidAddress(address) && cJSON_IsString(key) && strlen(key->valuestring) == 18 && (!code || cJSON_IsString(code))){
+        BLEAddress addr(address);m_lock.Lock();auto found = m_mapInfos.find(addr);
+        bool bound = found != m_mapInfos.end();uint32_t generation = bound ? found->second.m_generation : 0;m_lock.Unlock();
+        if(!bound) result.status = "device_not_bound";
+        else{
             size_t length = code ? strlen(code->valuestring) : 0;
             uint8_t *key_bytes = ReadStreamFromASC(key->valuestring);
             uint8_t *code_bytes = length ? ReadStreamFromASC(code->valuestring) : nullptr;
-            if(key_bytes && (!code || (length > 0 && length % 2 == 0 && code_bytes))){
-                result = m_pRemoterInterface->SendIRCode(addr, key_bytes, 9, code_bytes, length / 2);
-                if(result.confirmed) led_set_mode(LED_MODE_FAST_BLINK, 1);
+            if(key_bytes && (!code || (length && length%2 == 0 && code_bytes))){
+                auto job = std::make_shared<BleJob>(BleJob::IR,addr,generation,Now());
+                job->key.assign(key_bytes,key_bytes+9);
+                if(length) job->code.assign(code_bytes,code_bytes+length/2);
+                if(Enqueue(job)) result = Await(job);else result = job->result;
             }
-            free(key_bytes);
-            free(code_bytes);
+            free(key_bytes);free(code_bytes);
         }
     }
     cJSON *reply = cJSON_CreateObject();
-    cJSON_AddStringToObject(reply, "type", "irsend_result");
-    cJSON *payload = cJSON_AddObjectToObject(reply, "data");
-    cJSON_AddStringToObject(payload, "request_id", strlen(request_id) <= 64 ? request_id : "");
-    cJSON_AddStringToObject(payload, "device", address);
-    cJSON_AddBoolToObject(payload, "success", result.confirmed);
-    cJSON_AddBoolToObject(payload, "confirmed", result.confirmed);
-    cJSON_AddBoolToObject(payload, "cached", result.cached);
-    cJSON_AddStringToObject(payload, "status", result.status);
-    cJSON_AddNumberToObject(payload, "ack", result.ack);
-    cJSON_AddNumberToObject(payload, "elapsed_ms", (esp_timer_get_time() - started) / 1000);
-    char *json = cJSON_PrintUnformatted(reply);
-    cJSON_Delete(reply);
-    ESP_LOGI(LOG_TAG, "IR result for %s: %s (ack %02x)", address, result.status, result.ack);
-    return json;
+    cJSON_AddStringToObject(reply,"request_id",strlen(id)<=64 ? id : "");
+    cJSON_AddStringToObject(reply,"device",address);
+    cJSON_AddBoolToObject(reply,"success",result.confirmed);
+    cJSON_AddBoolToObject(reply,"confirmed",result.confirmed);
+    cJSON_AddBoolToObject(reply,"cached",result.cached);
+    cJSON_AddStringToObject(reply,"status",result.status);
+    cJSON_AddNumberToObject(reply,"ack",result.ack);
+    cJSON_AddNumberToObject(reply,"elapsed_ms",Now()-started);
+    ESP_LOGI(LOG_TAG,"IR %s result=%s ack=%02x",address,result.status,result.ack);
+    return Reply("irsend_result",reply);
 }
-
-char * Kernel::process_message_recvir(cJSON * data){
-    cJSON * device;
-    if((device=cJSON_GetObjectItem(data, "device")) != nullptr && device->type == cJSON_String){
-        BLEAddress addr(device->valuestring);
-        bool bFound = false;
-        m_lock.Lock();
-        if(m_mapInfos.find(addr) != m_mapInfos.end()){
-            bFound = true;
-        }
-        m_lock.Unlock();
-        if(bFound){
-            led_set_mode(LED_MODE_FAST_BLINK, 0);
-            m_pRemoterInterface->ReceiveIRCode(addr);
-            if(wifi_connected()){
-                led_set_mode(LED_MODE_ON, 0);
-            }
-            else{
-                led_set_mode(LED_MODE_OFF, 0);
-            }
+char *Kernel::process_message_recvir(cJSON *data){
+    bool accepted = false;cJSON *device = cJSON_GetObjectItem(data,"device");
+    if(cJSON_IsString(device) && ValidAddress(device->valuestring)){
+        BLEAddress addr(device->valuestring);m_lock.Lock();auto found = m_mapInfos.find(addr);
+        bool bound = found != m_mapInfos.end();uint32_t generation = bound ? found->second.m_generation : 0;m_lock.Unlock();
+        if(bound) accepted = Enqueue(std::make_shared<BleJob>(BleJob::Learn,addr,generation,Now()));
+    }
+    cJSON *reply = cJSON_CreateObject();cJSON_AddBoolToObject(reply,"accepted",accepted);return Reply("irrecv",reply);
+}
+char *Kernel::process_message_bind_threshold(cJSON *data){
+    cJSON *threshold = cJSON_GetObjectItem(data,"threshold");
+    if(cJSON_IsNumber(threshold) && threshold->valueint >= -60 && threshold->valueint <= -15){
+        nvs_write_bindthrld(threshold->valueint);GATTDevice::SetBindThreshold(threshold->valueint);
+    }
+    return nullptr;
+}
+char *Kernel::process_message_bind(){
+    cJSON *data = cJSON_CreateObject();cJSON_AddStringToObject(data,"status",StartBinding() ? "1" : "0");return Reply("bind",data);
+}
+char *Kernel::process_message_removebind(cJSON *data){
+    cJSON *device = cJSON_GetObjectItem(data,"device");bool removed = false;
+    if(cJSON_IsString(device) && ValidAddress(device->valuestring)){
+        BLEAddress address(device->valuestring);m_lock.Lock();removed = m_mapInfos.erase(address) != 0;
+        m_pendingBinds.erase(address);if(removed) SaveAddress();m_lock.Unlock();
+        if(removed){
+            cJSON *reply = cJSON_CreateObject();cJSON_AddStringToObject(reply,"device",device->valuestring);
+            char *message = Reply("removebind",reply);if(message){m_server.Boardcast(message,strlen(message));free(message);}
         }
     }
     return nullptr;
 }
-
-char * Kernel::process_message_bind_threshold(cJSON * data){
-    cJSON * threshold;
-    if((threshold=cJSON_GetObjectItem(data, "threshold")) != nullptr && threshold->type == cJSON_Number){
-        if(threshold->valueint >= -60 && threshold->valueint <= -15){
-            nvs_write_bindthrld((int8_t)threshold->valueint);
-            GATTDevice::SetBindThreshold(threshold->valueint);
-            ESP_LOGI(LOG_TAG, "Bind RSSI threshold set to %d", threshold->valueint);
-        }
+char *Kernel::process_message_subscribe(SocketClient *client){m_server.Subscribe(client);return nullptr;}
+char *Kernel::process_message_setinterval(cJSON *data){
+    cJSON *interval = cJSON_GetObjectItem(data,"update_interval");
+    if(cJSON_IsNumber(interval) && interval->valueint >= 1 && interval->valueint <= 30){
+        m_lock.Lock();m_nUpdateInterval = interval->valueint;
+        for(auto &entry:m_mapInfos) if(entry.second.m_poll.available)
+            entry.second.m_poll.next_attempt_ms = entry.second.m_poll.last_success_ms+m_nUpdateInterval*60000U;
+        nvs_write_interval(m_nUpdateInterval);m_lock.Unlock();Wake();
+        cJSON *reply = cJSON_CreateObject();cJSON_AddNumberToObject(reply,"update_interval",interval->valueint);
+        char *message = Reply("setinterval",reply);if(message){m_server.Boardcast(message,strlen(message));free(message);}
     }
     return nullptr;
 }
-
-char *  Kernel::process_message_bind(){
-    char * result = (char *)bind_mode_failed;
-    if(m_mode == KernelMode::Normal){
-        if(GATTDevice::StartScan()){
-            m_mode = KernelMode::ReadyBind;
-            result = (char *)bind_mode_successful;
-        }
-    }
-    return result;
-}
-
-char * Kernel::process_message_removebind(cJSON * data){
-    cJSON * device;
-    if((device=cJSON_GetObjectItem(data, "device")) != nullptr && device->type == cJSON_String){
-        BLEAddress addr(device->valuestring);
-        m_lock.Lock();
-        auto it = m_mapInfos.find(addr);
-        if(it != m_mapInfos.end()){
-            delete it->second;
-            m_mapInfos.erase(it);
-            SaveAddress();
-            int len = strlen(boardcast_template_removebind) + 18;
-            char * message = (char *)malloc(len);
-            sprintf(message, boardcast_template_removebind, device->valuestring);
-            m_server.Boardcast(message, strlen(message));
-            free(message);
-        }
-        m_lock.Unlock();
-    }
-    return nullptr;
-}
-
-char * Kernel::process_message_subscribe(SocketClient * pClient){
-    m_server.Subscribe(pClient);
-    return nullptr;
-}
-
-char * Kernel::process_message_setinterval(cJSON * data){
-    cJSON * interval;
-    if((interval=cJSON_GetObjectItem(data, "update_interval")) != nullptr && interval->type == cJSON_Number){
-        if(interval->valueint >= 1 && interval->valueint <= 30){
-            m_nUpdateInterval = interval->valueint;
-            nvs_write_interval(m_nUpdateInterval);
-            ESP_LOGI(LOG_TAG, "Data update interval set to %d minutes", m_nUpdateInterval);
-            int len = strlen(boardcast_template_setinterval) + 2;
-            char * message = (char *)malloc(len);
-            sprintf(message, boardcast_template_setinterval, m_nUpdateInterval);
-            int m = m_server.Boardcast(message, strlen(message));
-            ESP_LOGI(LOG_TAG, "boardcast to %d clients", m);
-            free(message);
-        }
-    }
-    return nullptr;
-}
-
 void Kernel::SaveAddress(){
-    uint16_t count = m_mapInfos.size();
-    uint8_t * buff = (uint8_t *)malloc(ESP_BD_ADDR_LEN * count);
-    count = 0;
-    for(auto it: m_mapInfos){
-        BLEAddress address = it.first;
-        memcpy(buff + count * ESP_BD_ADDR_LEN , address.getNative(), ESP_BD_ADDR_LEN);
-        count ++;
-    }
-    nvs_write_addrs(count, buff, count * ESP_BD_ADDR_LEN);
-    ESP_LOGI(LOG_TAG, "Saved %d addres to nvs storage total %d bytes", count, count * ESP_BD_ADDR_LEN);
-    free(buff);
+    std::vector<uint8_t> addresses;
+    for(const auto &entry:m_mapInfos){BLEAddress address = entry.first;auto *bytes = *address.getNative();addresses.insert(addresses.end(),bytes,bytes+ESP_BD_ADDR_LEN);}
+    nvs_write_addrs(m_mapInfos.size(),addresses.data(),addresses.size());
 }

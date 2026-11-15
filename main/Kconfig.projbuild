@@ -21,11 +21,6 @@ menu "Custom Configurayion"
             default "p1d32a94"
             depends on WIFI_SOFTAP_USE_POP
 
-        config WIFI_AP_RECONN_ATTEMPTS
-            int "Maximum AP connection attempts"
-            default 10
-            help
-                Set the maximum connection attempts to perform when connecting to a Wi-Fi AP.
     endmenu
 
     menu "LED Configuration"

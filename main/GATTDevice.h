@@ -61,6 +61,7 @@ private:
     uint16_t m_waitHandle;
     volatile bool m_waiting;
     volatile esp_gatt_status_t m_status;
+    bool m_timedOut = false;
 protected:
     SemaphoreLock * m_lock;
     uint16_t m_appid;

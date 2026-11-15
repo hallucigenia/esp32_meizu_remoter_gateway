@@ -48,17 +48,11 @@ struct wifi_prov_ctx {
     wifi_config_t wifi_cfg;
 };
 
-static bool wifiConnected = false;
 
 bool prov_start_softap_provisioning(const char *ssid, const char *pass,
                                     int security, const protocomm_security_pop_t *pop);
 
-on_connect on_connect_cb = NULL;
 on_prov_gotip on_prov_gotip_cb = NULL;
-
-bool wifi_connected(){
-    return wifiConnected;
-}
 
 static void prov_event_handler(void* handler_arg, esp_event_base_t event_base,
                                    int32_t event_id, void* event_data){
@@ -101,62 +95,6 @@ static void prov_event_handler(void* handler_arg, esp_event_base_t event_base,
         }
         esp_wifi_connect();
     }
-}
-
-static void event_handler(void* arg, esp_event_base_t event_base,
-                          int32_t event_id, void* event_data){
-    static int s_retry_num = 0;
-
-    if(event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
-    } 
-    else if(event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        ESP_LOGI(LOG_TAG,"Failed to connect to the AP");
-        if(on_connect_cb != NULL){
-            (*on_connect_cb)(false);
-        }
-        wifiConnected = false;
-        delay(5000);
-        //if(s_retry_num < CONFIG_WIFI_AP_RECONN_ATTEMPTS) {
-        esp_wifi_connect();
-        s_retry_num++;
-        ESP_LOGI(LOG_TAG, "Retry to connect to the AP");
-        //}
-    } 
-    else if(event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
-        ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
-        ESP_LOGI(LOG_TAG, "Got IP:" IPSTR, IP2STR(&event->ip_info.ip));
-        s_retry_num = 0;
-        wifiConnected = true;
-        if(on_connect_cb != NULL){
-            (*on_connect_cb)(true);
-        }
-    }
-}
-
-bool wifi_init_sta(on_connect cb){
-    on_connect_cb = cb;
-    esp_err_t ret = esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, event_handler, NULL);
-    if(ret != ESP_OK){
-        ESP_LOGE(LOG_TAG, "Failed to ESP event handler register: %s", esp_err_to_name(ret));
-        return false;
-    }
-    ret = esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, event_handler, NULL);
-    if(ret != ESP_OK){
-        ESP_LOGE(LOG_TAG, "Failed to ESP event handler register: %s", esp_err_to_name(ret));
-        return false;
-    }
-    ret = esp_wifi_set_mode(WIFI_MODE_STA);
-    if(ret != ESP_OK){
-        ESP_LOGE(LOG_TAG, "Failed to set Wifi STA mode: %s", esp_err_to_name(ret));
-        return false;
-    }
-    ret = esp_wifi_start();
-    if(ret != ESP_OK){
-        ESP_LOGE(LOG_TAG, "Failed to start Wifi on STA mode: %s", esp_err_to_name(ret));
-        return false;
-    }
-    return true;
 }
 
 bool wifi_init(){

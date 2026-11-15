@@ -8,7 +8,7 @@
 #include "string.h"
 
 BLEAddress::BLEAddress(){
-
+    memset(m_address, 0, sizeof(m_address));
 }
 
 BLEAddress::BLEAddress(esp_bd_addr_t address){
