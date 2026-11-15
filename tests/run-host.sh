@@ -5,6 +5,8 @@ cd "$(dirname "$0")/.."
 MEIZU_TEST_BUILD=$(mktemp -d)
 trap 'rm -rf "$MEIZU_TEST_BUILD"' EXIT
 export ASAN_OPTIONS="${ASAN_OPTIONS:-alloc_dealloc_mismatch=1:detect_leaks=0}"
+${CXX:-c++} -std=c++11 -Wall -Wextra -Werror -g -fsanitize=address,undefined -I main main/OtaPolicy.cpp tests/ota_policy_test.cpp -o "$MEIZU_TEST_BUILD/ota"
+"$MEIZU_TEST_BUILD/ota"
 ${CC:-cc} -std=c99 -g -Wno-deprecated-declarations -fsanitize=address,undefined -I "$MEIZU_CJSON_DIR" -c "$MEIZU_CJSON_DIR/cJSON.c" -o "$MEIZU_TEST_BUILD/cjson.o"
 ${CXX:-c++} -std=c++11 -Wall -Wextra -Werror -g -Wno-deprecated-declarations -fsanitize=address,undefined -I main main/IRProtocol.cpp tests/ir_protocol_test.cpp -o "$MEIZU_TEST_BUILD/ir"
 "$MEIZU_TEST_BUILD/ir"

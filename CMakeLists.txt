@@ -2,6 +2,8 @@
 # in this exact order for cmake to work correctly
 cmake_minimum_required(VERSION 3.5)
 set(PROJECT_NAME "esp32_meizu_remoter_gateway")
-set(PROJECT_VER "0.6.0-learn1")
+if(NOT DEFINED PROJECT_VER)
+    set(PROJECT_VER "0.7.0")
+endif()
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(esp32_meizu_remoter_gateway  C CXX)

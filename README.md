@@ -1,5 +1,8 @@
 # 魅族遥控器蓝牙网关
 
+`0.7.0` 新增 HA 原生 OTA 升级：认证 HTTPS 下载、双槽首启回滚与最小恢复模式。
+首次需要 USB 引导安装和每机密钥配置；分区、部署、发布及恢复说明见 [OTA 维护](docs/ota.md)。
+
 本 fork 的 `0.4.0-ack1` 增加红外发送应答，并修复 R16 的分包长度（每片 15 字节、完整 BLE 帧最多 20 字节）和整倍数尾包丢失。构建使用 ESP-IDF 4.3.7，协议测试见 `tests/ir_protocol_test.cpp`；CI 构建产物中的 `.bin` 是应用镜像。仓库原有 `build/` 内的旧镜像未更新。
 
 `config_info.data.capabilities` 包含 `ir_ack_v1`。客户端可在 `irsend.data` 加入最多 64 字节的 `request_id`，网关只向发起连接返回：

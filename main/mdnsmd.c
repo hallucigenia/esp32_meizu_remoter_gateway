@@ -67,5 +67,5 @@ const char * mdns_get_serial(){
 }
 
 const char * mdns_get_version(){
-    return app_desc->version;
+    return esp_ota_get_app_description()->version;
 }

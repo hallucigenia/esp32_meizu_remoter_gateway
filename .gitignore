@@ -1,3 +1,5 @@
 /build-ack/
+/build-ota/
+/release/
 /sdkconfig.old
 /tests/ir_protocol_test

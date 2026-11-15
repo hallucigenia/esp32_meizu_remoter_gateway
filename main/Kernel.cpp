@@ -2,6 +2,7 @@
 #include <driver/gpio.h>
 #include <esp_log.h>
 #include <esp_system.h>
+#include <esp_task_wdt.h>
 #include <string.h>
 #include <ctype.h>
 #include <limits>
@@ -11,6 +12,7 @@
 #include "nvsstorage.h"
 #include "mdnsmd.h"
 #include "Kernel.h"
+#include "OtaManager.h"
 #define LOG_TAG "Kernel"
 
 Kernel::Kernel() {}
@@ -38,11 +40,10 @@ char *Kernel::Reply(const char *type,cJSON *data){
 }
 void Kernel::Wake(){if(m_worker) xTaskNotifyGive(m_worker);}
 
-bool Kernel::Init(){
+bool Kernel::Init(bool recovery){
+    m_recovery=recovery;
     gpio_set_direction(GPIO_NUM_0,GPIO_MODE_INPUT);
-    if(!GATTDevice::Init(this,OnBindModeChanged,OnDeviceFound,OnRSSIRead)) return false;
     int8_t threshold;
-    if(nvs_read_bindthrld(&threshold)) GATTDevice::SetBindThreshold(threshold);
     if(!nvs_read_interval(&m_nUpdateInterval) || m_nUpdateInterval < 1 || m_nUpdateInterval > 30)
         m_nUpdateInterval = CONFIG_DEFAULT_UPDATE_INTERVAL;
     uint8_t count = 0;
@@ -64,6 +65,9 @@ bool Kernel::Init(){
     m_server.SetCallback(this,OnClientMessage);
     if(!m_server.Listen(CONFIG_SOCKET_LISTEN_PORT)) return false;
     ESP_LOGI(LOG_TAG,"TCP ready before BLE probes");
+    if(recovery){ESP_LOGW(LOG_TAG,"Recovery mode: networking and OTA only");return true;}
+    if(!GATTDevice::Init(this,OnBindModeChanged,OnDeviceFound,OnRSSIRead)) return false;
+    if(nvs_read_bindthrld(&threshold)) GATTDevice::SetBindThreshold(threshold);
     return xTaskCreate(Worker,"ble_worker",8192,this,tskIDLE_PRIORITY+1,&m_worker) == pdPASS;
 }
 
@@ -71,6 +75,9 @@ void Kernel::Loop(){
     uint16_t counter = 0;
     while(true){
         delay(200);
+        esp_task_wdt_reset();
+        ota.Console();ota.Tick(Ready());
+        if(m_recovery || m_updating) continue;
         if(gpio_get_level(GPIO_NUM_0) == 0){
             if(++counter == 10) StartBinding();
             else if(counter == 40){
@@ -92,7 +99,9 @@ void Kernel::Worker(void *parameter){
         BLEAddress binding;
         bool have_probe = false,have_binding = false,start_scan = false;
         kernel->m_lock.Lock();
-        if(!kernel->m_jobs.empty()){
+        if(kernel->m_updating){
+            // The in-flight operation has finished; keep the worker quiescent.
+        }else if(!kernel->m_jobs.empty()){
             job = kernel->m_jobs.front();kernel->m_jobs.pop_front();
             kernel->m_activeJob = job->kind == BleJob::IR ? "ir" : "learn";
         }else if(kernel->m_startScan){
@@ -125,9 +134,9 @@ void Kernel::Worker(void *parameter){
 
 bool Kernel::Enqueue(const std::shared_ptr<BleJob> &job){
     m_lock.Lock();
-    bool accepted = m_worker && m_mode == KernelMode::Normal && !m_learning && m_jobs.size() < 8;
+    bool accepted = m_worker && !m_updating && !m_recovery && m_mode == KernelMode::Normal && !m_learning && m_jobs.size() < 8;
     if(accepted){m_jobs.push_back(job);if(job->kind==BleJob::Learn) m_learning=job;}
-    else job->result.status = !m_worker ? "worker_unavailable" :
+    else job->result.status = m_updating ? "firmware_updating" : !m_worker ? "worker_unavailable" :
         (m_learning ? "learning_busy" : (m_mode == KernelMode::Normal ? "queue_full" : "binding_in_progress"));
     m_lock.Unlock();
     if(accepted) Wake();
@@ -253,7 +262,7 @@ void Kernel::BindDevice(BLEAddress address){
     Wake();
 }
 bool Kernel::StartBinding(){
-    m_lock.Lock();bool ready = m_mode == KernelMode::Normal && !m_learning;
+    m_lock.Lock();bool ready = !m_updating && !m_recovery && m_mode == KernelMode::Normal && !m_learning;
     if(ready){m_mode = KernelMode::ReadyBind;m_startScan = true;}
     m_lock.Unlock();
     if(ready){led_set_mode(LED_MODE_SLOW_BLINK,0);Wake();}
@@ -306,7 +315,11 @@ void Kernel::OnClientMessage(void * pCaller, SocketClient * pClient, char * pMes
     json = cJSON_Parse(pMessage);
     if(json != nullptr){
         if((jtype = cJSON_GetObjectItem(json, "type")) != nullptr && jtype->type == cJSON_String){
-            if (strcmp(jtype->valuestring, "config_info") == 0) {
+            if (strcmp(jtype->valuestring,"ota_status")==0 || strcmp(jtype->valuestring,"ota_challenge")==0 ||
+                strcmp(jtype->valuestring,"ota_start")==0 || strcmp(jtype->valuestring,"ota_cancel")==0 ||
+                strcmp(jtype->valuestring,"ota_auth")==0) {
+                pReply=Reply(jtype->valuestring,ota.Handle(pClient,jtype->valuestring,cJSON_GetObjectItem(json,"data")));
+            } else if (strcmp(jtype->valuestring, "config_info") == 0) {
                 pReply = pKernel->process_message_configinfo();
             } else if (strcmp(jtype->valuestring, "wifi_reconnect") == 0) {
                 cJSON *result = cJSON_CreateObject();
@@ -419,6 +432,8 @@ char *Kernel::process_message_configinfo(){
     cJSON *caps = cJSON_AddArrayToObject(data,"capabilities");
     for(const char *cap:{"ir_ack_v1","recovery_v1","measurement_age_v1","diagnostics_v1","learn_v1"})
         cJSON_AddItemToArray(caps,cJSON_CreateString(cap));
+    cJSON_AddItemToArray(caps,cJSON_CreateString("ota_pull_v1"));
+    cJSON_AddItemToObject(data,"ota",ota.Status());
     return Reply("config_info",data);
 }
 char *Kernel::process_message_devices(){
@@ -543,6 +558,7 @@ char *Kernel::process_message_recvir(cJSON *data){
     cJSON *reply = cJSON_CreateObject();cJSON_AddBoolToObject(reply,"accepted",accepted);return Reply("irrecv",reply);
 }
 char *Kernel::process_message_bind_threshold(cJSON *data){
+    if(m_updating || m_recovery) return nullptr;
     cJSON *threshold = cJSON_GetObjectItem(data,"threshold");
     if(cJSON_IsNumber(threshold) && threshold->valueint >= -60 && threshold->valueint <= -15){
         nvs_write_bindthrld(threshold->valueint);GATTDevice::SetBindThreshold(threshold->valueint);
@@ -553,6 +569,7 @@ char *Kernel::process_message_bind(){
     cJSON *data = cJSON_CreateObject();cJSON_AddStringToObject(data,"status",StartBinding() ? "1" : "0");return Reply("bind",data);
 }
 char *Kernel::process_message_removebind(cJSON *data){
+    if(m_updating || m_recovery) return nullptr;
     cJSON *device = cJSON_GetObjectItem(data,"device");bool removed = false;
     if(cJSON_IsString(device) && ValidAddress(device->valuestring)){
         BLEAddress address(device->valuestring);m_lock.Lock();removed = m_mapInfos.erase(address) != 0;
@@ -566,6 +583,7 @@ char *Kernel::process_message_removebind(cJSON *data){
 }
 char *Kernel::process_message_subscribe(SocketClient *client){m_server.Subscribe(client);return nullptr;}
 char *Kernel::process_message_setinterval(cJSON *data){
+    if(m_updating || m_recovery) return nullptr;
     cJSON *interval = cJSON_GetObjectItem(data,"update_interval");
     if(cJSON_IsNumber(interval) && interval->valueint >= 1 && interval->valueint <= 30){
         m_lock.Lock();m_nUpdateInterval = interval->valueint;
@@ -583,4 +601,15 @@ void Kernel::SaveAddress(){
     const uint8_t empty = 0;
     if(!nvs_write_addrs(m_mapInfos.size(),addresses.empty() ? &empty : addresses.data(),addresses.size()))
         ESP_LOGE(LOG_TAG,"Failed to persist binding list");
+}
+
+bool Kernel::PauseOTA(bool pause){
+    m_lock.Lock();
+    bool accepted=!pause || (!m_updating && !m_learning && m_jobs.empty() &&
+        m_mode==KernelMode::Normal && !m_startScan && m_pendingBinds.empty());
+    if(accepted) m_updating=pause;
+    m_lock.Unlock();Wake();return accepted;
+}
+bool Kernel::OTAIdle(){
+    m_lock.Lock();bool idle=strcmp(m_activeJob,"idle")==0;m_lock.Unlock();return idle;
 }

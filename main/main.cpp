@@ -8,11 +8,13 @@
 #include <freertos/task.h>
 #include <nvs.h>
 #include <nvs_flash.h>
+#include <esp_task_wdt.h>
 #include "wifi.h"
 #include "led.h"
 #include "mdnsmd.h"
 #include "utils.h"
 #include "Kernel.h"
+#include "OtaManager.h"
 
 #ifdef CONFIG_WIFI_RESET_PROVISIONED
     #define RESTORE_WIFI_CONFIG true
@@ -27,6 +29,7 @@ typedef struct esp_custom_app_desc_t {
 const __attribute__((section(".rodata_custom_desc"))) esp_custom_app_desc_t custom_app_desc = {.app_author_name="@georgezhao2010"};
 
 Kernel kernel;
+OtaManager ota(kernel);
 
 
 void on_wifi_prov_gotip(){
@@ -48,12 +51,9 @@ void on_wifi_connect(bool connected){
 bool setup(void){
     esp_err_t ret = nvs_flash_init();
     ESP_LOGI("Init", "Flash initializing");
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        ret = nvs_flash_init();
-    }
     if(ret != ESP_OK){
-        ESP_LOGE("Init", "Failed to Flash initialization");
+        ESP_LOGE("Init", "NVS initialization failed; preserving Wi-Fi and bindings");
+        OtaManager::RejectPending();
         return false;
     }
     ESP_LOGI("Init", "LED initializing");
@@ -83,8 +83,13 @@ bool setup(void){
         ESP_LOGE("Init", "Failed to mDNS initialization");
     }
     ESP_LOGI("Init", "Kernel processor initializing");
-    if(!kernel.Init()){
+    if(!ota.Init()){
+        ESP_LOGE("Init","OTA configuration unavailable; preserving NVS");
+        OtaManager::RejectPending();return false;
+    }
+    if(!kernel.Init(ota.Recovery())){
         ESP_LOGE("Init", "Failed to kernel processor initialization");
+        OtaManager::RejectPending();
         return false;
     }
     ESP_LOGI("Init", "Initialization was completely succeeded");
@@ -92,7 +97,13 @@ bool setup(void){
 }
 
 extern "C" void app_main(void){
+    esp_task_wdt_init(30,true);
+    esp_task_wdt_add(nullptr);
     if(setup()){
         kernel.Loop();
     }
+    OtaManager::RejectPending();
+    // A failed baseline boot is counted on the next start; after three attempts
+    // the networking/OTA-only path runs before the failing BLE initialization.
+    vTaskDelay(pdMS_TO_TICKS(5000));esp_restart();
 }

@@ -37,8 +37,11 @@ struct BleJob {
 class Kernel {
 public:
     Kernel();
-    bool Init();
+    bool Init(bool recovery=false);
     void Loop();
+    bool PauseOTA(bool pause);
+    bool OTAIdle();
+    bool Ready() const {return m_recovery || m_worker != nullptr;}
     static void Restart();
 private:
     SocketServer m_server;
@@ -54,6 +57,8 @@ private:
     SemaphoreLock m_lock;
     TaskHandle_t m_worker = nullptr;
     const char *m_activeJob = "idle";
+    std::atomic<bool> m_updating{false};
+    bool m_recovery=false;
     uint32_t m_expiredJobs = 0;
     static uint64_t Now(){return esp_timer_get_time() / 1000;}
     static void OnClientMessage(void *,SocketClient *,char *,int);

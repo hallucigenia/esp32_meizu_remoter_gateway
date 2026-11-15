@@ -16,11 +16,31 @@ jobs:
         run: |
           mkdir -p build-ack
           cp sdkconfig build-ack/sdkconfig
-          docker run --rm -v "$GITHUB_WORKSPACE:/project" -w /project espressif/idf:v4.3.7 idf.py --no-ccache -B build-ack -DSDKCONFIG=build-ack/sdkconfig build
+          MEIZU_VERSION=0.7.0
+          if [ "$GITHUB_REF_TYPE" = tag ]; then MEIZU_VERSION="${GITHUB_REF_NAME#v}"; fi
+          docker run --rm -v "$GITHUB_WORKSPACE:/project" -w /project espressif/idf:v4.3.7 idf.py --no-ccache -B build-ack -DSDKCONFIG=build-ack/sdkconfig -DPROJECT_VER="$MEIZU_VERSION" build
+          python3 tools/package-release.py --image build-ack/esp32_meizu_remoter_gateway.bin --bootloader build-ack/bootloader/bootloader.bin --output release --version "$MEIZU_VERSION"
       - uses: actions/upload-artifact@v4
         with:
-          name: meizu-gateway-ack
+          name: meizu-gateway
           path: |
             build-ack/esp32_meizu_remoter_gateway.bin
             build-ack/esp32_meizu_remoter_gateway.elf
             build-ack/sdkconfig
+            release/firmware.ota.bin
+            release/manifest.json
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v') && github.event_name == 'push'
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: meizu-gateway
+      - name: Publish stable OTA release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release create "$GITHUB_REF_NAME" release/firmware.ota.bin release/manifest.json --verify-tag --title "Meizu gateway $GITHUB_REF_NAME" --generate-notes --latest
