@@ -1,6 +1,6 @@
 # Gateway OTA
 
-Firmware 0.7.1 adds authenticated device-side HTTPS OTA, compatible with the
+Firmware 0.7.2 adds authenticated device-side HTTPS OTA, compatible with the
 ESPHome managed-update manifest shape. The Home Assistant integration needs 1.4.0.
 The existing TCP protocol, bindings, measurement interval, IR acknowledgements and
 learning transactions remain the business interface.
@@ -71,7 +71,7 @@ application until rollback protection is no longer needed.
 ## Build and publish
 
 Build with ESP-IDF 4.3.7. `PROJECT_VER` can be supplied to CMake; the default is
-0.7.1. CI runs sanitizer host tests, builds, checks app and bootloader sizes and
+0.7.2. CI runs sanitizer host tests, builds, checks app and bootloader sizes and
 packages `firmware.ota.bin` and `manifest.json`. Pushing a stable `vX.Y.Z` tag
 publishes those two public artifacts as a prerelease only after the build succeeds.
 After physical validation, promote the candidate with `gh release edit vX.Y.Z
@@ -84,3 +84,6 @@ and `ota_cancel`. Starts/cancellations/auth checks use HMAC-SHA256 over the
 newline-separated contract in `main/OtaPolicy.cpp`; commands remain below the
 existing 511-byte TCP input limit. Status never returns the key. An active
 request ID is idempotent, and completed/failed IDs cannot start another write.
+
+The USB-powered gateway disables Wi-Fi modem sleep for predictable receive latency.
+Diagnostics read back the actual driver power-save mode (0 = none) and Wi-Fi RSSI.

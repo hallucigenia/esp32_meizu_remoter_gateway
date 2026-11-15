@@ -3,7 +3,7 @@
 cmake_minimum_required(VERSION 3.5)
 set(PROJECT_NAME "esp32_meizu_remoter_gateway")
 if(NOT DEFINED PROJECT_VER)
-    set(PROJECT_VER "0.7.1")
+    set(PROJECT_VER "0.7.2")
 endif()
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(esp32_meizu_remoter_gateway  C CXX)

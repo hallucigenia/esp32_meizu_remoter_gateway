@@ -476,6 +476,10 @@ char *Kernel::process_message_diagnostics(){
     cJSON_AddNumberToObject(network,"consecutive_failures",wifi.consecutive_failures);
     cJSON_AddNumberToObject(network,"last_disconnect_reason",wifi.last_disconnect_reason);
     cJSON_AddNumberToObject(network,"retry_in_ms",wifi.retry_in_ms);
+    if(wifi.power_save_mode>=0) cJSON_AddNumberToObject(network,"power_save_mode",wifi.power_save_mode);
+    else cJSON_AddNullToObject(network,"power_save_mode");
+    if(wifi.rssi>-127) cJSON_AddNumberToObject(network,"rssi",wifi.rssi);
+    else cJSON_AddNullToObject(network,"rssi");
     return Reply("diagnostics",data);
 }
 char *Kernel::process_message_sendir(cJSON *data){

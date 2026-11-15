@@ -11,6 +11,7 @@ static uint64_t now_us=0;
 static unsigned connects=0,disconnects=0,connected_callbacks=0,disconnected_callbacks=0;
 static esp_event_handler_t handler;
 static bool fail_connect=false;
+static wifi_ps_type_t power_save=WIFI_PS_MIN_MODEM;
 esp_event_base_t WIFI_EVENT="wifi",IP_EVENT="ip";
 extern "C" {
 int64_t esp_timer_get_time(){return now_us;}
@@ -26,6 +27,9 @@ esp_err_t esp_timer_stop(esp_timer_handle_t timer){timer->active=false;return ES
 esp_err_t esp_event_handler_register(esp_event_base_t,int32_t,esp_event_handler_t value,void *){handler=value;return ESP_OK;}
 esp_err_t esp_wifi_set_mode(int){return ESP_OK;}
 esp_err_t esp_wifi_start(){return ESP_OK;}
+esp_err_t esp_wifi_set_ps(wifi_ps_type_t value){power_save=value;return ESP_OK;}
+esp_err_t esp_wifi_get_ps(wifi_ps_type_t *value){*value=power_save;return ESP_OK;}
+esp_err_t esp_wifi_sta_get_ap_info(wifi_ap_record_t *value){value->rssi=-61;return ESP_OK;}
 esp_err_t esp_wifi_connect(){++connects;return fail_connect?ESP_FAIL:ESP_OK;}
 esp_err_t esp_wifi_disconnect(){
     ++disconnects;wifi_event_sta_disconnected_t event={8};handler(nullptr,WIFI_EVENT,WIFI_EVENT_STA_DISCONNECTED,&event);return ESP_OK;
@@ -51,6 +55,7 @@ int main(){
     Advance(999);assert(connects==1);Advance(1);assert(connects==2);
     handler(nullptr,IP_EVENT,IP_EVENT_STA_GOT_IP,nullptr);wifi_get_diagnostics(&info);
     assert(info.connected&&info.consecutive_failures==0&&info.retry_in_ms==0);
+    assert(info.power_save_mode==WIFI_PS_NONE&&info.rssi==-61);
     unsigned count=connects;Advance(60000);assert(connects==count);
     for(int n=0;n<40;++n){
         Lost(200);wifi_get_diagnostics(&info);assert(info.retry_in_ms>0&&info.retry_in_ms<=30000);Advance(info.retry_in_ms);

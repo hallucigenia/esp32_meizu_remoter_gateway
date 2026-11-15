@@ -25,6 +25,10 @@ void wifi_get_diagnostics(wifi_diagnostics_t *output){
     uint64_t now = esp_timer_get_time()/1000;
     taskENTER_CRITICAL(&s_mux);*output = s_stats;
     output->retry_in_ms = s_retry_at_ms>now ? s_retry_at_ms-now : 0;taskEXIT_CRITICAL(&s_mux);
+    wifi_ps_type_t mode;
+    output->power_save_mode=esp_wifi_get_ps(&mode)==ESP_OK ? (int8_t)mode : -1;
+    wifi_ap_record_t access_point;
+    output->rssi=output->connected && esp_wifi_sta_get_ap_info(&access_point)==ESP_OK ? access_point.rssi : -127;
 }
 static void schedule_retry(){
     uint32_t wait_ms;
@@ -100,5 +104,9 @@ bool wifi_init_sta(on_connect callback){
     if(esp_event_handler_register(WIFI_EVENT,ESP_EVENT_ANY_ID,station_event,NULL) != ESP_OK ||
        esp_event_handler_register(IP_EVENT,IP_EVENT_STA_GOT_IP,station_event,NULL) != ESP_OK) return false;
     if(esp_wifi_set_mode(WIFI_MODE_STA) != ESP_OK) return false;
-    return esp_wifi_start() == ESP_OK;
+    if(esp_wifi_start()!=ESP_OK) return false;
+    // This USB-powered gateway needs predictable receive latency, including
+    // recovery mode without BLE. Avoid AP/modem-sleep buffering interactions.
+    if(esp_wifi_set_ps(WIFI_PS_NONE)!=ESP_OK) ESP_LOGW("wifi","Could not disable Wi-Fi power save");
+    return true;
 }

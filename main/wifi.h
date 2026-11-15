@@ -13,6 +13,7 @@ typedef struct {
     uint32_t disconnects, reconnect_attempts, consecutive_failures;
     uint16_t last_disconnect_reason;
     uint32_t retry_in_ms;
+    int8_t power_save_mode, rssi;
 } wifi_diagnostics_t;
 
 #ifdef __cplusplus
