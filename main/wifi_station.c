@@ -105,8 +105,8 @@ bool wifi_init_sta(on_connect callback){
        esp_event_handler_register(IP_EVENT,IP_EVENT_STA_GOT_IP,station_event,NULL) != ESP_OK) return false;
     if(esp_wifi_set_mode(WIFI_MODE_STA) != ESP_OK) return false;
     if(esp_wifi_start()!=ESP_OK) return false;
-    // This USB-powered gateway needs predictable receive latency, including
-    // recovery mode without BLE. Avoid AP/modem-sleep buffering interactions.
-    if(esp_wifi_set_ps(WIFI_PS_NONE)!=ESP_OK) ESP_LOGW("wifi","Could not disable Wi-Fi power save");
+    // IDF 4.3 requires MIN_MODEM before enabling the BLE coexistence controller.
+    // OTA/recovery switch to NONE only while that controller is disabled.
+    if(esp_wifi_set_ps(WIFI_PS_MIN_MODEM)!=ESP_OK) ESP_LOGW("wifi","Could not set Wi-Fi coexistence power mode");
     return true;
 }

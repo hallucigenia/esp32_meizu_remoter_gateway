@@ -55,7 +55,7 @@ int main(){
     Advance(999);assert(connects==1);Advance(1);assert(connects==2);
     handler(nullptr,IP_EVENT,IP_EVENT_STA_GOT_IP,nullptr);wifi_get_diagnostics(&info);
     assert(info.connected&&info.consecutive_failures==0&&info.retry_in_ms==0);
-    assert(info.power_save_mode==WIFI_PS_NONE&&info.rssi==-61);
+    assert(info.power_save_mode==WIFI_PS_MIN_MODEM&&info.rssi==-61);
     unsigned count=connects;Advance(60000);assert(connects==count);
     for(int n=0;n<40;++n){
         Lost(200);wifi_get_diagnostics(&info);assert(info.retry_in_ms>0&&info.retry_in_ms<=30000);Advance(info.retry_in_ms);

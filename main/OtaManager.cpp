@@ -7,6 +7,9 @@
 #include <esp_https_ota.h>
 #include <esp_log.h>
 #include <esp_system.h>
+#include <esp_bt.h>
+#include <esp_bt_main.h>
+#include <esp_wifi.h>
 #include <esp_timer.h>
 #include <mbedtls/md.h>
 #include <mbedtls/sha256.h>
@@ -91,10 +94,14 @@ bool OtaManager::Init() {
         else if(saved=="rebooting") {phase_="failed";error_="rolled_back_or_bootloader_unsupported";}
         else if(saved=="complete" && image_.version==esp_ota_get_app_description()->version) phase_="complete";
         else if(saved=="downloading") {phase_="failed";error_="interrupted";}
-        else if(saved=="failed") {phase_="failed";error_="previous_update_failed";}
+        else if(saved=="failed" || saved=="cancelled") {
+            phase_=saved;error_=ReadString(handle,"error");
+            if(error_.empty()) error_="previous_update_failed";
+        }
     }
     bool committed=nvs_commit(handle)==ESP_OK;nvs_close(handle);
     paired_=paired_ && committed;
+    if(recovery_ && esp_wifi_set_ps(WIFI_PS_NONE)!=ESP_OK) return false;
     fcntl(STDIN_FILENO,F_SETFL,fcntl(STDIN_FILENO,F_GETFL,0)|O_NONBLOCK);
     ESP_LOGI(TAG,"OTA ready; recovery=%d rollback_seen=%d. USB command: ota-key",recovery_,rollback_seen_);
     return paired_;
@@ -113,6 +120,7 @@ bool OtaManager::Persist(const char *phase) {
     bool ok=nvs_set_str(handle,"id",image_.id.c_str())==ESP_OK &&
         nvs_set_str(handle,"version",image_.version.c_str())==ESP_OK &&
         nvs_set_str(handle,"sha256",image_.sha256.c_str())==ESP_OK &&
+        nvs_set_str(handle,"error",error_.c_str())==ESP_OK &&
         nvs_set_u32(handle,"size",image_.size)==ESP_OK &&
         nvs_set_u32(handle,"target",target_address_)==ESP_OK &&
         nvs_set_str(handle,"phase",phase)==ESP_OK && nvs_commit(handle)==ESP_OK;
@@ -162,6 +170,7 @@ cJSON *OtaManager::Status() {
     cJSON_AddStringToObject(data,"error",error_.c_str());cJSON_AddNumberToObject(data,"size",image_.size);
     cJSON_AddNumberToObject(data,"written",written_);lock_.Unlock();
     cJSON_AddBoolToObject(data,"active",active_);cJSON_AddBoolToObject(data,"confirmed",confirmed_);
+    cJSON_AddBoolToObject(data,"bluetooth_paused",radio_stopped_);
     cJSON_AddBoolToObject(data,"safe_mode",recovery_);cJSON_AddBoolToObject(data,"paired",paired_);
     cJSON_AddBoolToObject(data,"rollback_verified",rollback_seen_);cJSON_AddBoolToObject(data,"layout_valid",Layout());
     cJSON_AddStringToObject(data,"board",meizu_ota::BOARD);
@@ -229,8 +238,17 @@ cJSON *OtaManager::Handle(SocketClient *client,const char *type,cJSON *data) {
     lock_.Unlock();return Result(started,started ? "accepted" : "no_memory");
 }
 void OtaManager::Fail(const char *reason) {
-    lock_.Lock();phase_=cancelled_ ? "cancelled" : "failed";error_=reason;Persist("failed");lock_.Unlock();
-    kernel_.PauseOTA(false);active_=false;ESP_LOGW(TAG,"Update stopped: %s",reason);
+    lock_.Lock();phase_=cancelled_ ? "cancelled" : "failed";error_=cancelled_ ? "cancelled" : reason;
+    Persist(phase_.c_str());lock_.Unlock();
+    active_=false;ESP_LOGW(TAG,"Update stopped: %s",reason);
+    if(radio_stopped_){
+        // Recreate all GATT registrations from a clean boot rather than trying
+        // to reuse handles owned by the stopped Bluedroid stack. Boot selection
+        // has not changed on download/identity/hash/cancel failures.
+        ESP_LOGI(TAG,"Restarting unchanged application to restore Bluetooth");
+        vTaskDelay(pdMS_TO_TICKS(1500));esp_restart();
+    }
+    kernel_.PauseOTA(false);
 }
 void OtaManager::Worker(void *context) {
     static_cast<OtaManager *>(context)->Download();vTaskDelete(nullptr);
@@ -241,6 +259,17 @@ void OtaManager::Download() {
         if(cancelled_ || Now()-started>20000){Fail("ble_busy");return;}
         vTaskDelay(pdMS_TO_TICKS(100));
     }
+    if(cancelled_){Fail("cancelled");return;}
+    if(!recovery_){
+        radio_stopped_=true;
+        if((esp_bluedroid_get_status()==ESP_BLUEDROID_STATUS_ENABLED && esp_bluedroid_disable()!=ESP_OK) ||
+           (esp_bluedroid_get_status()==ESP_BLUEDROID_STATUS_INITIALIZED && esp_bluedroid_deinit()!=ESP_OK) ||
+           (esp_bt_controller_get_status()==ESP_BT_CONTROLLER_STATUS_ENABLED && esp_bt_controller_disable()!=ESP_OK) ||
+           (esp_bt_controller_get_status()==ESP_BT_CONTROLLER_STATUS_INITED && esp_bt_controller_deinit()!=ESP_OK)){
+            Fail("bluetooth_stop_failed");return;
+        }
+    }
+    if(esp_wifi_set_ps(WIFI_PS_NONE)!=ESP_OK){Fail("wifi_mode_failed");return;}
     // The timestamp is covered by the per-device HMAC; TLS certificate dates
     // can be validated even on a device without a battery-backed clock.
     timeval clock={static_cast<time_t>(image_.timestamp),0};settimeofday(&clock,nullptr);

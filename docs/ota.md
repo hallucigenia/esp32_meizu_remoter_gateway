@@ -1,6 +1,6 @@
 # Gateway OTA
 
-Firmware 0.7.2 adds authenticated device-side HTTPS OTA, compatible with the
+Firmware 0.7.3 adds authenticated device-side HTTPS OTA, compatible with the
 ESPHome managed-update manifest shape. The Home Assistant integration needs 1.4.0.
 The existing TCP protocol, bindings, measurement interval, IR acknowledgements and
 learning transactions remain the business interface.
@@ -51,7 +51,9 @@ not a claim that unsigned code cannot be installed with physical USB access.
 
 IR/learning/binding must be idle before installation. An in-flight measurement
 can finish; subsequent BLE work is paused. New IR requests fail explicitly rather
-than accumulating. Failure/cancellation restores ordinary polling. Transfers
+than accumulating. Recovery-mode failures restore the maintenance service. In normal mode, the
+Bluetooth stack is stopped for transfer; failure/cancellation reboots the unchanged
+application to recreate GATT registrations and resume polling. Transfers
 have a five-minute bound and 15-second network read timeout. Disconnecting HA
 does not orphan the transfer: the device owns it, and the durable request ID is
 queried after reconnect/restart. Ambiguous results never trigger automatic reflash.
@@ -71,7 +73,7 @@ application until rollback protection is no longer needed.
 ## Build and publish
 
 Build with ESP-IDF 4.3.7. `PROJECT_VER` can be supplied to CMake; the default is
-0.7.2. CI runs sanitizer host tests, builds, checks app and bootloader sizes and
+0.7.3. CI runs sanitizer host tests, builds, checks app and bootloader sizes and
 packages `firmware.ota.bin` and `manifest.json`. Pushing a stable `vX.Y.Z` tag
 publishes those two public artifacts as a prerelease only after the build succeeds.
 After physical validation, promote the candidate with `gh release edit vX.Y.Z
@@ -85,5 +87,9 @@ newline-separated contract in `main/OtaPolicy.cpp`; commands remain below the
 existing 511-byte TCP input limit. Status never returns the key. An active
 request ID is idempotent, and completed/failed IDs cannot start another write.
 
-The USB-powered gateway disables Wi-Fi modem sleep for predictable receive latency.
-Diagnostics read back the actual driver power-save mode (0 = none) and Wi-Fi RSSI.
+ESP-IDF 4.3.7 requires Wi-Fi MIN_MODEM while the Bluetooth coexistence controller
+is enabled. Normal operation retains that mode (driver value 1). OTA first waits
+for radio work to stop, deinitializes Bluedroid/controller, then uses Wi-Fi NONE
+(driver value 0). Recovery skips Bluetooth and also uses NONE. Diagnostics read
+back the actual driver mode and Wi-Fi RSSI. This avoids changing the old SDK
+coexistence contract while keeping the maintenance transfer responsive.

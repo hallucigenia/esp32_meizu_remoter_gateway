@@ -31,6 +31,7 @@ private:
     meizu_ota::Image image_;
     size_t written_ = 0;
     std::atomic<bool> active_{false}, cancelled_{false};
+    std::atomic<bool> radio_stopped_{false};
     esp_ota_img_states_t initial_state_ = ESP_OTA_IMG_UNDEFINED;
     static void Worker(void *context);
     void Download();
