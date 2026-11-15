@@ -134,8 +134,7 @@ bool wifi_provisioned(bool restore, bool *provisioned){
 
     if(strlen((const char*) wifi_cfg.sta.ssid)) {
         *provisioned = true;
-        ESP_LOGI(LOG_TAG, "Found ssid %s",     (const char*) wifi_cfg.sta.ssid);
-        ESP_LOGI(LOG_TAG, "Found password %s", (const char*) wifi_cfg.sta.password);
+        ESP_LOGI(LOG_TAG, "Stored Wi-Fi configuration found");
     }
     return true;
 }
@@ -264,7 +263,7 @@ bool prov_start_softap_provisioning(const char *ssid, const char *pass,
         return false;
     }
 
-    ESP_LOGI(LOG_TAG, "SoftAP Provisioning started with SSID '%s', Password '%s'", ssid, pass);
+    ESP_LOGI(LOG_TAG, "SoftAP provisioning started");
     return true;
 }
 
@@ -345,8 +344,7 @@ static esp_err_t set_config_handler(const wifi_prov_config_set_data_t *req_data,
         ESP_LOGE(LOG_TAG, "Unable to alloc wifi config");
         return ESP_FAIL;
     }
-    ESP_LOGI(LOG_TAG, "WiFi Credentials Received : \n\tssid %s \n\tpassword %s",
-             req_data->ssid, req_data->password);
+    ESP_LOGI(LOG_TAG, "Wi-Fi credentials received");
     const size_t ssid_len = strnlen(req_data->ssid, sizeof(wifi_cfg->sta.ssid));
     memset(wifi_cfg->sta.ssid, 0, sizeof(wifi_cfg->sta.ssid));
     memcpy(wifi_cfg->sta.ssid, req_data->ssid, ssid_len);

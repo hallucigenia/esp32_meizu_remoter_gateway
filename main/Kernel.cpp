@@ -60,13 +60,13 @@ bool Kernel::Init(bool recovery){
             }
         }else ESP_LOGE(LOG_TAG,"Invalid stored binding list");
     }
-    m_pRemoterInterface = new MEIZURemoter();
     // TCP becomes usable before the first (possibly offline) BLE probe.
     m_server.SetCallback(this,OnClientMessage);
     if(!m_server.Listen(CONFIG_SOCKET_LISTEN_PORT)) return false;
     ESP_LOGI(LOG_TAG,"TCP ready before BLE probes");
     if(recovery){ESP_LOGW(LOG_TAG,"Recovery mode: networking and OTA only");return true;}
     if(!GATTDevice::Init(this,OnBindModeChanged,OnDeviceFound,OnRSSIRead)) return false;
+    m_pRemoterInterface = new MEIZURemoter();
     if(nvs_read_bindthrld(&threshold)) GATTDevice::SetBindThreshold(threshold);
     return xTaskCreate(Worker,"ble_worker",8192,this,tskIDLE_PRIORITY+1,&m_worker) == pdPASS;
 }
