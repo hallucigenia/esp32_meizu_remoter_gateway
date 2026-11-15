@@ -16,7 +16,7 @@ jobs:
         run: |
           mkdir -p build-ack
           cp sdkconfig build-ack/sdkconfig
-          MEIZU_VERSION=0.7.3
+          MEIZU_VERSION=0.7.4
           if [ "$GITHUB_REF_TYPE" = tag ]; then MEIZU_VERSION="${GITHUB_REF_NAME#v}"; fi
           docker run --rm -v "$GITHUB_WORKSPACE:/project" -w /project espressif/idf:v4.3.7 idf.py --no-ccache -B build-ack -DSDKCONFIG=build-ack/sdkconfig -DPROJECT_VER="$MEIZU_VERSION" build
           python3 tools/package-release.py --image build-ack/esp32_meizu_remoter_gateway.bin --bootloader build-ack/bootloader/bootloader.bin --output release --version "$MEIZU_VERSION"

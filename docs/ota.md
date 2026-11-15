@@ -1,6 +1,6 @@
 # Gateway OTA
 
-Firmware 0.7.3 adds authenticated device-side HTTPS OTA, compatible with the
+Firmware 0.7.4 adds authenticated device-side HTTPS OTA, compatible with the
 ESPHome managed-update manifest shape. The Home Assistant integration needs 1.4.0.
 The existing TCP protocol, bindings, measurement interval, IR acknowledgements and
 learning transactions remain the business interface.
@@ -73,7 +73,7 @@ application until rollback protection is no longer needed.
 ## Build and publish
 
 Build with ESP-IDF 4.3.7. `PROJECT_VER` can be supplied to CMake; the default is
-0.7.3. CI runs sanitizer host tests, builds, checks app and bootloader sizes and
+0.7.4. CI runs sanitizer host tests, builds, checks app and bootloader sizes and
 packages `firmware.ota.bin` and `manifest.json`. Pushing a stable `vX.Y.Z` tag
 publishes those two public artifacts as a prerelease only after the build succeeds.
 After physical validation, promote the candidate with `gh release edit vX.Y.Z
