@@ -90,11 +90,14 @@ void Kernel::Worker(void *parameter){
         std::shared_ptr<BleJob> job;
         MEIZURemoterInfo probe;
         BLEAddress binding;
-        bool have_probe = false,have_binding = false;
+        bool have_probe = false,have_binding = false,start_scan = false;
         kernel->m_lock.Lock();
         if(!kernel->m_jobs.empty()){
             job = kernel->m_jobs.front();kernel->m_jobs.pop_front();
             kernel->m_activeJob = job->kind == BleJob::IR ? "ir" : "learn";
+        }else if(kernel->m_startScan){
+            kernel->m_startScan = false;start_scan = true;
+            kernel->m_activeJob = "bind_scan";
         }else if(!kernel->m_pendingBinds.empty()){
             auto it = kernel->m_pendingBinds.begin();
             binding = *it;kernel->m_pendingBinds.erase(it);have_binding = true;
@@ -110,6 +113,9 @@ void Kernel::Worker(void *parameter){
         }
         kernel->m_lock.Unlock();
         if(job) kernel->RunJob(job);
+        else if(start_scan){
+            if(!GATTDevice::StartScan()) OnBindModeChanged(kernel,false);
+        }
         else if(have_binding) kernel->BindDevice(binding);
         else if(have_probe) kernel->PollDevice(probe);
         else ulTaskNotifyTake(pdTRUE,pdMS_TO_TICKS(250));
@@ -199,11 +205,10 @@ void Kernel::BindDevice(BLEAddress address){
 }
 bool Kernel::StartBinding(){
     m_lock.Lock();bool ready = m_mode == KernelMode::Normal;
-    if(ready) m_mode = KernelMode::ReadyBind;
+    if(ready){m_mode = KernelMode::ReadyBind;m_startScan = true;}
     m_lock.Unlock();
-    if(!ready) return false;
-    if(GATTDevice::StartScan()) return true;
-    m_lock.Lock();m_mode = KernelMode::Normal;m_lock.Unlock();return false;
+    if(ready){led_set_mode(LED_MODE_SLOW_BLINK,0);Wake();}
+    return ready;
 }
 void Kernel::OnBindModeChanged(void *caller,bool binding){
     auto *kernel = static_cast<Kernel *>(caller);
@@ -489,5 +494,7 @@ char *Kernel::process_message_setinterval(cJSON *data){
 void Kernel::SaveAddress(){
     std::vector<uint8_t> addresses;
     for(const auto &entry:m_mapInfos){BLEAddress address = entry.first;auto *bytes = *address.getNative();addresses.insert(addresses.end(),bytes,bytes+ESP_BD_ADDR_LEN);}
-    nvs_write_addrs(m_mapInfos.size(),addresses.data(),addresses.size());
+    const uint8_t empty = 0;
+    if(!nvs_write_addrs(m_mapInfos.size(),addresses.empty() ? &empty : addresses.data(),addresses.size()))
+        ESP_LOGE(LOG_TAG,"Failed to persist binding list");
 }

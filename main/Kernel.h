@@ -45,6 +45,7 @@ private:
     std::map<BLEAddress,MEIZURemoterInfo> m_mapInfos;
     std::deque<std::shared_ptr<BleJob>> m_jobs;
     std::set<BLEAddress> m_pendingBinds;
+    bool m_startScan = false;
     SemaphoreLock m_lock;
     TaskHandle_t m_worker = nullptr;
     const char *m_activeJob = "idle";
