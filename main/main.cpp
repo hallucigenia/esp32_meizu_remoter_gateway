@@ -12,7 +12,7 @@
 #include "led.h"
 #include "mdnsmd.h"
 #include "utils.h"
-#include "kernel.h"
+#include "Kernel.h"
 
 #ifdef CONFIG_WIFI_RESET_PROVISIONED
     #define RESTORE_WIFI_CONFIG true
