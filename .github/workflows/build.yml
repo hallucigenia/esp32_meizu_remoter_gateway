@@ -7,7 +7,7 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-      - name: Test IR, state ownership, recovery, and Wi-Fi
+      - name: Test IR, learning, state ownership, recovery, and Wi-Fi
         run: |
           mkdir -p /tmp/meizu-cjson
           docker run --rm --entrypoint tar espressif/idf:v4.3.7 -C /opt/esp/idf/components/json -cf - cJSON | tar -xf - -C /tmp/meizu-cjson
@@ -16,7 +16,7 @@ jobs:
         run: |
           mkdir -p build-ack
           cp sdkconfig build-ack/sdkconfig
-          docker run --rm -v "$GITHUB_WORKSPACE:/project" -w /project espressif/idf:v4.3.7 idf.py -B build-ack -DSDKCONFIG=build-ack/sdkconfig build
+          docker run --rm -v "$GITHUB_WORKSPACE:/project" -w /project espressif/idf:v4.3.7 idf.py --no-ccache -B build-ack -DSDKCONFIG=build-ack/sdkconfig build
       - uses: actions/upload-artifact@v4
         with:
           name: meizu-gateway-ack
