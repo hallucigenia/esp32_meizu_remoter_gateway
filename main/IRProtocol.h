@@ -22,6 +22,7 @@ public:
     virtual bool WriteFrame(const uint8_t *data, size_t length) = 0;
     virtual bool ReceiveFrame(IRFrame &frame, uint32_t timeout_ms) = 0;
     virtual uint64_t NowMs() = 0;
+    virtual bool LinkAlive(){return true;}
 };
 
 // One command only. Never retry a send after an ambiguous timeout: Auto and

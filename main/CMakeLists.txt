@@ -1,4 +1,4 @@
-idf_component_register(SRCS "IRProtocol.cpp" "RemoterInfo.cpp" "Remoter.cpp" "BLEAddress.cpp" "BLEUUID.cpp" "GATTDevice.cpp" "GATTRemoteCharacteristic.cpp"
+idf_component_register(SRCS "IRProtocol.cpp" "LearnProtocol.cpp" "RemoterInfo.cpp" "Remoter.cpp" "BLEAddress.cpp" "BLEUUID.cpp" "GATTDevice.cpp" "GATTRemoteCharacteristic.cpp"
     "GATTRemoteService.cpp" "Kernel.cpp" "mdnsmd.c" "nvsstorage.c" "utils.c"
     "SemaphoreLock.cpp" "SocketClient.cpp" "SocketServer.cpp" "led.c" "wifi.c" "wifi_station.c" "main.cpp"
                     INCLUDE_DIRS ".")

@@ -25,6 +25,27 @@
 
 主机回归覆盖原发码协议、缺失及长设备信息、内存所有权、超过五次失败后的恢复、排队取消/过期，以及正常 Wi-Fi 回调的非阻塞重试、退避上限、错误码和主动重连。`MEIZU_CJSON_DIR` 指向 ESP-IDF 4.3.7 的 `components/json/cJSON` 后运行 `tests/run-host.sh`；CI 在 AddressSanitizer/UndefinedBehaviorSanitizer 下运行相同测试。
 
+## 原生学习版本 0.6.0-learn1
+
+`config_info` 新增能力 `learn_v1`。学习事务在 BLE worker 中执行，TCP 接收线程立即返回，期间心跳、诊断和取消仍可处理。一个网关同时保留一个学习会话，学习期间新发码或绑定返回忙；已开始的 BLE 操作先结束。原五分钟等轮询配置不变，结束后自动恢复探测。
+
+```json
+{"type":"learn_start","data":{"request_id":"unique-id","device":"ab:2d:12:34:56:ef","timeout":15}}
+{"type":"learn_cancel","data":{"request_id":"unique-id","device":"ab:2d:12:34:56:ef"}}
+```
+
+网关仅向发起连接推送 `learn_event`，所有事件包含原 `request_id` 和 `device`：
+
+- `phase:queued` / `connecting`：等待工作或连接中。
+- `phase:ready,timeout_ms:15000`：实际收到设备 `0x07` 后开始学习窗口。`timeout` 可为 1–15 秒。
+- `phase:receiving,received:<bytes>,length:<bytes>`：已收到头部或数据，提示用户停止按键。
+- `phase:complete,status:ok,length:<bytes>,raw:<hex>`：完整重组 10–1500 字节原始数据并完成 `0x0B` 确认。
+- `phase:failed,status:<reason>` 或 `phase:cancelled,status:cancelled`：未成功。
+
+完成事件不是可发射码；HA 端须先将 ET4007 捕获转换成发送格式、校验后保存。固件只接收，不预装也不发射。每包最多 15 字节，缺包通过 `0x0A` 请求；未就绪时最多等待 8 秒，数据接收有总期限。所有退出路径发送 `0x06` 停止并断开 BLE。发起 TCP 连接断开、显式取消或绑定代次改变都会终止学习。使用递增连接 ID，避免旧事务结果发送给复用内存的新连接。
+
+输入 JSON 仍限 511 字节；学习结果是输出消息，最大约 3.2 KB，客户端须支持流式 JSON 解析。旧 `irrecv` 保留串口诊断，新的 HA 客户端使用 `learn_start`。协议离线测试见 `tests/learn_protocol_test.cpp`，覆盖就绪、错误序号、超时、取消、断连、缺包和接收上限；测试断言整个学习过程没有发射指令。
+
 [![Stable](https://img.shields.io/github/v/release/georgezhao2010/esp32_meizu_remoter_gateway)](https://github.com/georgezhao2010/esp32_meizu_remoter_gateway/releases/latest)
 
 一个ESP32固件，用于魅族遥控器的网关，可以将魅族遥控器的温湿度数据通过局域网进行推送，同时还支持通过局域网控制魅族遥控器发送和接收红外数据。

@@ -155,29 +155,38 @@ bool MEIZURemoter::ReceiveFrame(IRFrame &frame, uint32_t timeout_ms){
     return false;
 }
 
-bool MEIZURemoter::ReceiveIRCode(BLEAddress addr){
-    m_lockDevice.Lock();
-    bool result = false;
-    if(Connect(addr)){
-        GATTRemoteService * pService = GetService(serviceUUID);
-        if(pService != nullptr){
-            GATTRemoteCharacteristic * pCh = pService->GetCharacteristic(characteristicUUID);
-            pCh->RegNotify();
-            SendCommand(pCh, NextSequence(), CMD_RECV_IR);
-            delay(20000);
-            SendCommand(pCh, m_sequence, 0x0b);
-            SendCommand(pCh, m_sequence, 0x06);
-            pCh->UnregNotify();
+LearnResult MEIZURemoter::LearnCode(BLEAddress addr,uint32_t window_ms,LearnCancelled cancelled,LearnProgress progress){
+    LearnResult result;
+    if(!m_lockDevice.Wait(15000)){result.status="busy";return result;}
+    if(cancelled()) result.status="cancelled";
+    else if(!Connect(addr)) result.status="connect_failed";
+    else {
+        auto *service=GetService(serviceUUID);
+        m_irCharacteristic=service ? service->GetCharacteristic(characteristicUUID) : nullptr;
+        if(!m_irCharacteristic) result.status="characteristic_missing";
+        else if(!m_irFrames) result.status="no_memory";
+        else {
+            xQueueReset(m_irFrames);
+            if(Subscribe(m_irCharacteristic,true)) result=LearnIR(*this,NextSequence(),window_ms,cancelled,progress);
+            else result.status="subscribe_failed";
+            Subscribe(m_irCharacteristic,false);
         }
-        Close();
+        Close();m_irCharacteristic=nullptr;
     }
-    m_lockDevice.Unlock();
-    return result;
+    m_lockDevice.Unlock();return result;
+}
+
+bool MEIZURemoter::ReceiveIRCode(BLEAddress addr){
+    // Preserve the serial diagnostic entry point; use the same complete receiver.
+    auto result=LearnCode(addr,15000,[]{return false;},[](const char *,size_t,size_t){});
+    if(!result.raw.empty()) ESP_LOG_BUFFER_HEX(LOG_TAG,result.raw.data(),result.raw.size());
+    return strcmp(result.status,"ok")==0;
 }
 
 void MEIZURemoter::OnNotify(GATTRemoteCharacteristic * pCh, uint8_t * data, uint16_t length){
     if(pCh == m_irCharacteristic && m_irFrames && length >= 4 && length <= 20 &&
-            (data[3] == 0x01 || data[3] == 0x02 || data[3] == 0x04)){
+            (data[3] == 0x01 || data[3] == 0x02 || data[3] == 0x04 ||
+             data[3] == 0x07 || data[3] == 0x08 || data[3] == 0x09)){
         IRFrame frame = {};
         frame.length = length;
         memcpy(frame.data, data, length);

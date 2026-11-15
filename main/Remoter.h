@@ -8,6 +8,7 @@
 #include "GATTDevice.h"
 #include "RemoterInfo.h"
 #include "IRProtocol.h"
+#include "LearnProtocol.h"
 #include "freertos/queue.h"
 
 typedef void (*on_update_cb)(void *, MEIZURemoterInfo *);
@@ -20,6 +21,7 @@ public:
     bool ReadAllInfo(MEIZURemoterInfo * pInfo);
     IRResult SendIRCode(BLEAddress addr, uint8_t * key, uint16_t keylen, uint8_t * ircode, uint16_t ircodelen);
     bool ReceiveIRCode(BLEAddress addr);
+    LearnResult LearnCode(BLEAddress, uint32_t, LearnCancelled, LearnProgress);
     virtual void OnNotify(GATTRemoteCharacteristic * pCh, uint8_t * data, uint16_t length);
 private:
     bool SendCommand(GATTRemoteCharacteristic * pCh, uint8_t * data, uint16_t length);
@@ -27,6 +29,7 @@ private:
     bool WriteFrame(const uint8_t *data, size_t length) override;
     bool ReceiveFrame(IRFrame &frame, uint32_t timeout_ms) override;
     uint64_t NowMs() override;
+    bool LinkAlive() override {return ConnectingState()==GATTConnectionState::Connected;}
     uint8_t NextSequence();
     QueueHandle_t m_irFrames;
     GATTRemoteCharacteristic *m_irCharacteristic;

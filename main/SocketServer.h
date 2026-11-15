@@ -9,6 +9,7 @@
 
 #include "SemaphoreLock.h"
 #include <map>
+#include <stdint.h>
 
 class SocketClient;
 
@@ -27,6 +28,8 @@ public:
     int Boardcast(char * pMessage, int nLen);
     void SendMessage(SocketClient * pClient, char * pMessage, int nLen);
     void Subscribe(SocketClient * pClient);
+    bool Connected(uint32_t id);
+    void SendTo(uint32_t id, char *message, int length);
     bool Close();
 private:
     int m_socket;

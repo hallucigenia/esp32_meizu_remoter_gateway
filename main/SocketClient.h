@@ -6,6 +6,7 @@
 
 #ifndef _SOCKET_CLIENT_H_
 #define _SOCKET_CLIENT_H_
+#include <stdint.h>
 
 class SocketServer;
 class SocketClient;
@@ -19,11 +20,13 @@ public:
     ~SocketClient();
     inline const char * GetPeerAddr(){return m_pAddr;}
     inline int GetPeerPort(){return m_nPort;}
+    uint32_t Id() const {return m_id;}
     void Send(char * pMessage, int nLen);
     void Start();
 private:
     void * m_pKernel;
     int m_socket;
+    uint32_t m_id;
     char * m_pAddr;
     int m_nPort;
     SocketServer * m_pServer;

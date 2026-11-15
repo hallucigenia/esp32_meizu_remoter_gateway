@@ -6,6 +6,7 @@
 #include <deque>
 #include <memory>
 #include <vector>
+#include <atomic>
 #include <cJSON.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
@@ -26,6 +27,9 @@ struct BleJob {
     CommandState state;
     SemaphoreLock completed;
     IRResult result;
+    std::atomic<bool> cancelled{false};
+    uint32_t client_id=0,window_ms=15000;
+    std::string request_id;
     BleJob(Kind k, BLEAddress a, uint32_t g, uint64_t now):
         kind(k),address(a),generation(g),state(now + 15000),completed(true) {}
 };
@@ -44,6 +48,7 @@ private:
     MEIZURemoter *m_pRemoterInterface = nullptr;
     std::map<BLEAddress,MEIZURemoterInfo> m_mapInfos;
     std::deque<std::shared_ptr<BleJob>> m_jobs;
+    std::shared_ptr<BleJob> m_learning;
     std::set<BLEAddress> m_pendingBinds;
     bool m_startScan = false;
     SemaphoreLock m_lock;
@@ -66,6 +71,7 @@ private:
     bool Enqueue(const std::shared_ptr<BleJob> &);
     IRResult Await(const std::shared_ptr<BleJob> &);
     void RunJob(const std::shared_ptr<BleJob> &);
+    void LearnEvent(const std::shared_ptr<BleJob> &,const char *,size_t=0,size_t=0,const LearnResult * = nullptr);
     void BindDevice(BLEAddress);
     void PollDevice(MEIZURemoterInfo);
     void BoardcastInfo(const MEIZURemoterInfo &);
@@ -76,6 +82,7 @@ private:
     char *process_message_refresh(cJSON *);
     char *process_message_sendir(cJSON *);
     char *process_message_recvir(cJSON *);
+    char *process_message_learn(SocketClient *,cJSON *,bool);
     char *process_message_bind_threshold(cJSON *);
     char *process_message_bind();
     char *process_message_removebind(cJSON *);

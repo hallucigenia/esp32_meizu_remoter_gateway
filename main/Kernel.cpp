@@ -125,10 +125,10 @@ void Kernel::Worker(void *parameter){
 
 bool Kernel::Enqueue(const std::shared_ptr<BleJob> &job){
     m_lock.Lock();
-    bool accepted = m_worker && m_mode == KernelMode::Normal && m_jobs.size() < 8;
-    if(accepted) m_jobs.push_back(job);
+    bool accepted = m_worker && m_mode == KernelMode::Normal && !m_learning && m_jobs.size() < 8;
+    if(accepted){m_jobs.push_back(job);if(job->kind==BleJob::Learn) m_learning=job;}
     else job->result.status = !m_worker ? "worker_unavailable" :
-        (m_mode == KernelMode::Normal ? "queue_full" : "binding_in_progress");
+        (m_learning ? "learning_busy" : (m_mode == KernelMode::Normal ? "queue_full" : "binding_in_progress"));
     m_lock.Unlock();
     if(accepted) Wake();
     return accepted;
@@ -148,13 +148,14 @@ void Kernel::RunJob(const std::shared_ptr<BleJob> &job){
     m_lock.Lock();
     auto found = m_mapInfos.find(job->address);
     bool bound = found != m_mapInfos.end() && found->second.m_generation == job->generation;
-    bool start = bound && job->state.Start(Now());
+    bool start = bound && !job->cancelled && job->state.Start(Now());
     if(!start){
-        job->result.status = bound ? "queue_timeout" : "device_not_bound";
+        job->result.status = job->cancelled ? "cancelled" : (bound ? "queue_timeout" : "device_not_bound");
         job->state.phase = CommandState::Done;
         ++m_expiredJobs;
     }
     m_lock.Unlock();
+    LearnResult learned;
     if(start){
         IRResult result;
         if(job->kind == BleJob::IR){
@@ -162,12 +163,60 @@ void Kernel::RunJob(const std::shared_ptr<BleJob> &job){
                 job->code.empty() ? nullptr : job->code.data(),job->code.size());
             if(result.confirmed) led_set_mode(LED_MODE_FAST_BLINK,1);
         }else{
-            m_pRemoterInterface->ReceiveIRCode(job->address);
-            result.status = "learning_finished";
+            LearnEvent(job,"connecting");
+            learned=m_pRemoterInterface->LearnCode(job->address,job->window_ms,
+                [this,job]{
+                    if(job->cancelled || (job->client_id && !m_server.Connected(job->client_id))) return true;
+                    m_lock.Lock();auto found=m_mapInfos.find(job->address);
+                    bool retained=found!=m_mapInfos.end() && found->second.m_generation==job->generation;
+                    m_lock.Unlock();return !retained;
+                },
+                [this,job](const char *phase,size_t received,size_t total){LearnEvent(job,phase,received,total);});
+            result.status=learned.status;
+            ESP_LOGI(LOG_TAG,"Learning %s result=%s bytes=%u",job->address.toString().c_str(),learned.status,learned.raw.size());
+            if(!job->client_id && !learned.raw.empty()) ESP_LOG_BUFFER_HEX(LOG_TAG,learned.raw.data(),learned.raw.size());
         }
         m_lock.Lock();job->result = result;job->state.phase = CommandState::Done;m_lock.Unlock();
     }
+    if(job->kind==BleJob::Learn){
+        m_lock.Lock();
+        if(m_learning==job) m_learning.reset();
+        auto device=m_mapInfos.find(job->address);
+        if(job->cancelled || device==m_mapInfos.end() || device->second.m_generation!=job->generation){
+            job->result.status="cancelled";learned.raw.clear();
+        }
+        if(device!=m_mapInfos.end() && device->second.m_generation==job->generation)
+            device->second.m_poll.next_attempt_ms=0;
+        m_lock.Unlock();
+        learned.status=job->result.status;
+        LearnEvent(job,strcmp(learned.status,"ok")==0 ? "complete" :
+            (strcmp(learned.status,"cancelled")==0 ? "cancelled" : "failed"),0,0,&learned);
+    }
     job->completed.Unlock();
+}
+
+void Kernel::LearnEvent(const std::shared_ptr<BleJob> &job,const char *phase,size_t received,size_t total,const LearnResult *result){
+    if(!job->client_id) return;
+    cJSON *data=cJSON_CreateObject();
+    cJSON_AddStringToObject(data,"request_id",job->request_id.c_str());
+    cJSON_AddStringToObject(data,"device",job->address.toString().c_str());
+    cJSON_AddStringToObject(data,"phase",phase);
+    if(strcmp(phase,"ready")==0) cJSON_AddNumberToObject(data,"timeout_ms",total);
+    if(strcmp(phase,"receiving")==0){
+        cJSON_AddNumberToObject(data,"received",received);cJSON_AddNumberToObject(data,"length",total);
+    }
+    if(result){
+        cJSON_AddStringToObject(data,"status",result->status);
+        if(strcmp(result->status,"ok")==0){
+            std::string hex;hex.reserve(result->raw.size()*2);
+            const char *digits="0123456789abcdef";
+            for(uint8_t byte:result->raw){hex+=digits[byte>>4];hex+=digits[byte&15];}
+            cJSON_AddNumberToObject(data,"length",result->raw.size());
+            cJSON_AddStringToObject(data,"raw",hex.c_str());
+        }
+    }
+    char *message=Reply("learn_event",data);
+    if(message){m_server.SendTo(job->client_id,message,strlen(message));free(message);}
 }
 
 void Kernel::PollDevice(MEIZURemoterInfo snapshot){
@@ -204,7 +253,7 @@ void Kernel::BindDevice(BLEAddress address){
     Wake();
 }
 bool Kernel::StartBinding(){
-    m_lock.Lock();bool ready = m_mode == KernelMode::Normal;
+    m_lock.Lock();bool ready = m_mode == KernelMode::Normal && !m_learning;
     if(ready){m_mode = KernelMode::ReadyBind;m_startScan = true;}
     m_lock.Unlock();
     if(ready){led_set_mode(LED_MODE_SLOW_BLINK,0);Wake();}
@@ -274,6 +323,8 @@ void Kernel::OnClientMessage(void * pCaller, SocketClient * pClient, char * pMes
                 if((data=cJSON_GetObjectItem(json, "data")) != nullptr && data->type == cJSON_Object){
                     pReply = pKernel->process_message_sendir(data);
                 }
+            } else if (strcmp(jtype->valuestring, "learn_start") == 0 || strcmp(jtype->valuestring, "learn_cancel") == 0) {
+                pReply = pKernel->process_message_learn(pClient,cJSON_GetObjectItem(json,"data"),strcmp(jtype->valuestring,"learn_cancel")==0);
             } else if (strcmp(jtype->valuestring, "irrecv") == 0) {
                 if((data=cJSON_GetObjectItem(json, "data")) != nullptr && data->type == cJSON_Object){
                     pReply = pKernel->process_message_recvir(data);
@@ -366,7 +417,7 @@ char *Kernel::process_message_configinfo(){
     m_lock.Lock();uint8_t interval = m_nUpdateInterval;m_lock.Unlock();
     cJSON_AddNumberToObject(data,"update_interval",interval);
     cJSON *caps = cJSON_AddArrayToObject(data,"capabilities");
-    for(const char *cap:{"ir_ack_v1","recovery_v1","measurement_age_v1","diagnostics_v1"})
+    for(const char *cap:{"ir_ack_v1","recovery_v1","measurement_age_v1","diagnostics_v1","learn_v1"})
         cJSON_AddItemToArray(caps,cJSON_CreateString(cap));
     return Reply("config_info",data);
 }
@@ -447,6 +498,41 @@ char *Kernel::process_message_sendir(cJSON *data){
     ESP_LOGI(LOG_TAG,"IR %s result=%s ack=%02x",address,result.status,result.ack);
     return Reply("irsend_result",reply);
 }
+char *Kernel::process_message_learn(SocketClient *client,cJSON *data,bool cancel){
+    cJSON *request=cJSON_GetObjectItem(data,"request_id"),*device=cJSON_GetObjectItem(data,"device");
+    cJSON *timeout=cJSON_GetObjectItem(data,"timeout");
+    const char *id=cJSON_IsString(request) ? request->valuestring : "";
+    const char *address=cJSON_IsString(device) ? device->valuestring : "";
+    const char *status="invalid_parameters";
+    bool accepted=false;
+    if(strlen(id)>0 && strlen(id)<=64 && ValidAddress(address)){
+        if(cancel){
+            m_lock.Lock();
+            if(m_learning && m_learning->client_id==client->Id() && m_learning->request_id==id &&
+                    m_learning->address==BLEAddress(address)){
+                m_learning->cancelled=true;accepted=true;
+            }
+            m_lock.Unlock();Wake();
+        }else if(!timeout || (cJSON_IsNumber(timeout) && timeout->valuedouble==timeout->valueint && timeout->valueint>=1 && timeout->valueint<=15)){
+            BLEAddress addr(address);m_lock.Lock();auto found=m_mapInfos.find(addr);
+            bool bound=found!=m_mapInfos.end();uint32_t generation=bound ? found->second.m_generation : 0;m_lock.Unlock();
+            if(!bound) status="device_not_bound";
+            else{
+                auto job=std::make_shared<BleJob>(BleJob::Learn,addr,generation,Now());
+                job->request_id=id;job->client_id=client->Id();job->window_ms=timeout ? timeout->valueint*1000 : 15000;
+                accepted=Enqueue(job);status=accepted ? "ok" : job->result.status;
+            }
+        }
+    }
+    cJSON *reply=cJSON_CreateObject();
+    cJSON_AddStringToObject(reply,"request_id",strlen(id)<=64 ? id : "");
+    cJSON_AddStringToObject(reply,"device",address);
+    if(cancel){cJSON_AddBoolToObject(reply,"accepted",accepted);return Reply("learn_cancel",reply);}
+    cJSON_AddStringToObject(reply,"phase",accepted ? "queued" : "failed");
+    cJSON_AddStringToObject(reply,"status",status);
+    return Reply("learn_event",reply);
+}
+
 char *Kernel::process_message_recvir(cJSON *data){
     bool accepted = false;cJSON *device = cJSON_GetObjectItem(data,"device");
     if(cJSON_IsString(device) && ValidAddress(device->valuestring)){

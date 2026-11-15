@@ -13,11 +13,13 @@
 #include "SocketClient.h"
 
 #define LOG_TAG "SocketClient"
+static std::atomic<uint32_t> next_client_id{1};
 
 
 SocketClient::SocketClient(int sock, const char * pAddr, int nPort,  SocketServer * pServer, on_client_close on_close_cb,
                            void * pKernel, on_client_message on_message_cb){
     m_pKernel = pKernel;
+    m_id = next_client_id.fetch_add(1);
     m_onmessage_cb = on_message_cb;
     m_socket = sock;
     int len = strlen(pAddr);

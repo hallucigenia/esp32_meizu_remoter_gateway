@@ -151,3 +151,16 @@ void SocketServer::Subscribe(SocketClient * pClient){
     }
     m_lock.Unlock();
 }
+
+bool SocketServer::Connected(uint32_t id){
+    m_lock.Lock();
+    bool connected=false;
+    for(const auto &client:m_clients) if(client.first->Id()==id){connected=true;break;}
+    m_lock.Unlock();return connected;
+}
+
+void SocketServer::SendTo(uint32_t id,char *message,int length){
+    m_lock.Lock();
+    for(const auto &client:m_clients) if(client.first->Id()==id){client.first->Send(message,length);break;}
+    m_lock.Unlock();
+}
