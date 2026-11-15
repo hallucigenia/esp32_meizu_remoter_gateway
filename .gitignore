@@ -3,3 +3,14 @@
 /release/
 /sdkconfig.old
 /tests/ir_protocol_test
+
+# Private device state and maintenance records are never source artifacts.
+/.local/
+/runs/
+/backups/
+/.env
+/.env.*
+!/.env.example
+/secrets.yaml
+/flash-*.bin
+/prefix-*.bin

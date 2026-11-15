@@ -81,6 +81,13 @@ After physical validation, promote the candidate with `gh release edit vX.Y.Z
 job alone receives repository write permission. Device backups must never be
 added to releases.
 
+Use synthetic identifiers such as `ABC123` in examples and tests. Keep device
+serials, MAC addresses, private hostnames, credential-bearing logs, full-flash
+backups, HA `.storage`, `.local/` and maintenance `runs/` out of public commits
+and release attachments. Publish only the CI-built application and manifest;
+do not upload a flash dump from a configured device. Use a GitHub noreply author
+address for public commits.
+
 The application supports `ota_status`, `ota_challenge`, `ota_auth`, `ota_start`
 and `ota_cancel`. Starts/cancellations/auth checks use HMAC-SHA256 over the
 newline-separated contract in `main/OtaPolicy.cpp`; commands remain below the
