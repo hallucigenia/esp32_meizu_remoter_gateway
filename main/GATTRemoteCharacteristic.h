@@ -21,6 +21,7 @@ public:
     bool Read();
     bool RegNotify();
     bool UnregNotify();
+    inline uint16_t GetHandle(){return m_handle;}
     inline GATTRemoteService * GetService(){return m_pService;}
 private:
     GATTRemoteService * m_pService;

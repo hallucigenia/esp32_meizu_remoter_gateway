@@ -1,4 +1,16 @@
 # 魅族遥控器蓝牙网关
+
+本 fork 的 `0.4.0-ack1` 增加红外发送应答，并修复 R16 的分包长度（每片 15 字节、完整 BLE 帧最多 20 字节）和整倍数尾包丢失。构建使用 ESP-IDF 4.3.7，协议测试见 `tests/ir_protocol_test.cpp`；CI 构建产物中的 `.bin` 是应用镜像。仓库原有 `build/` 内的旧镜像未更新。
+
+`config_info.data.capabilities` 包含 `ir_ack_v1`。客户端可在 `irsend.data` 加入最多 64 字节的 `request_id`，网关只向发起连接返回：
+
+```json
+{"type":"irsend_result","data":{"request_id":"unique-id","device":"ab:2d:12:34:56:ef","success":true,"confirmed":true,"cached":true,"status":"ok","ack":4,"elapsed_ms":320}}
+```
+
+`ack:4` 表示小圆饼确认缓存发送，`ack:2` 表示上传新码后收到最终确认。缺少缓存且未提供完整码返回 `cache_miss`；蓝牙连接、订阅、写入失败或超时分别返回错误状态，绝不把 TCP 写入当成发码成功。`confirmed` 仅代表小圆饼的蓝牙应答，无法确认被控电器的实际状态。超时后不自动重发；同一次上传内仅响应小圆饼的缺包请求。TCP 输入支持拆包和连续 JSON 对象，单个对象仍限 511 字节。
+
+已有网关升级前应备份整片 Flash，并读取实际分区表与 OTA 选择信息。确认当前应用槽和大小后，仅向该槽写入应用镜像；保留原 bootloader、分区表、NVS、OTA 数据以及其它分区。不要用仓库内的分区表覆盖已配置网关。
 [![Stable](https://img.shields.io/github/v/release/georgezhao2010/esp32_meizu_remoter_gateway)](https://github.com/georgezhao2010/esp32_meizu_remoter_gateway/releases/latest)
 
 一个ESP32固件，用于魅族遥控器的网关，可以将魅族遥控器的温湿度数据通过局域网进行推送，同时还支持通过局域网控制魅族遥控器发送和接收红外数据。

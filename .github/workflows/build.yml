@@ -1,0 +1,25 @@
+name: Firmware and protocol tests
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test IR transaction protocol
+        run: |
+          g++ -std=c++11 -Wall -Wextra -Werror -fsanitize=address,undefined -I main main/IRProtocol.cpp tests/ir_protocol_test.cpp -o /tmp/ir_protocol_test
+          /tmp/ir_protocol_test
+      - name: Build with ESP-IDF 4.3.7
+        run: |
+          mkdir -p build-ack
+          cp sdkconfig build-ack/sdkconfig
+          docker run --rm -v "$GITHUB_WORKSPACE:/project" -w /project espressif/idf:v4.3.7 idf.py -B build-ack -DSDKCONFIG=build-ack/sdkconfig build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: meizu-gateway-ack
+          path: |
+            build-ack/esp32_meizu_remoter_gateway.bin
+            build-ack/esp32_meizu_remoter_gateway.elf
+            build-ack/sdkconfig

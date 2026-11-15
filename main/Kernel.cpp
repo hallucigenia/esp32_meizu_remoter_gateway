@@ -5,10 +5,11 @@
  */
 #include <driver/gpio.h>
 #include <esp_log.h>
-#include <cjson.h>
+#include <cJSON.h>
 #include <string.h>
 #include <list>
 #include <esp_pthread.h>
+#include <ctype.h>
 #include "led.h"
 #include "utils.h"
 #include "wifi.h"
@@ -19,7 +20,7 @@
 #define BLE_MAX_FIAILED_TIMES 5
 #define LOG_TAG "Kernel"
 
-const char * template_config_info = "{\"type\":\"config_info\",\"data\":{\"version\":\"%s\",\"serialno\":\"%s\", \"update_interval\":%d}}";
+const char * template_config_info = "{\"type\":\"config_info\",\"data\":{\"version\":\"%s\",\"serialno\":\"%s\", \"update_interval\":%d,\"capabilities\":[\"ir_ack_v1\"]}}";
 const char * boardcast_template_available = "{\"type\":\"update\",\"data\":{\"device\":\"%s\",\"available\":1,\"status\":%s}}";
 const char * boardcast_template_unavailable = "{\"type\":\"update\",\"data\":{\"device\":\"%s\",\"available\":0}}";
 const char * template_devices = "{\"type\":\"devices\",\"data\":{\"devices\":%s}}";
@@ -406,46 +407,56 @@ char * Kernel::process_message_devices(){
     return json;
 }
 
-char * Kernel::process_message_sendir(cJSON * data){
-    cJSON * key, * ircode,* device;
-    if((key = cJSON_GetObjectItem(data, "key")) != nullptr && key->type == cJSON_String &&
-            (device=cJSON_GetObjectItem(data, "device")) != nullptr && device->type == cJSON_String){
-        BLEAddress addr(device->valuestring);
-        bool bFound = false;
-        m_lock.Lock();
-        if(m_mapInfos.find(addr) != m_mapInfos.end()){
-            bFound = true;
-        }
-        m_lock.Unlock();
-        if(bFound){
-            char * Key = key->valuestring;
-            char * IRCode = nullptr;
-            uint8_t key_len = strlen(Key) / 2;
-            uint8_t ircode_len = 0;
-            if((ircode = cJSON_GetObjectItem(data, "ircode")) != nullptr && ircode->type == cJSON_String){
-                IRCode = ircode->valuestring;
-                ircode_len = strlen(IRCode) / 2;
-            }
-            uint8_t * key_stream = ReadStreamFromASC(Key);
-            uint8_t * ircode_stream = ReadStreamFromASC(IRCode);
-            if(key_stream != nullptr && ((ircode_stream == nullptr && ircode_len == 0) || ircode_stream != nullptr)){
-                if(m_pRemoterInterface->SendIRCode(addr, key_stream, key_len, ircode_stream, ircode_len)){
-                    led_set_mode(LED_MODE_FAST_BLINK, 1);
-                }
-            }
-            else{
-                ESP_LOGW(LOG_TAG, "Invalid IR code");
-            }
-            if(key_stream != nullptr){
-                free(key_stream);
-            }
-            if(ircode_stream != nullptr){
-                free(ircode_stream);
-            }
-        }
-        m_lock.Unlock();
+char * Kernel::process_message_sendir(cJSON *data){
+    const int64_t started = esp_timer_get_time();
+    IRResult result;
+    result.status = "invalid_parameters";
+    cJSON *request = cJSON_GetObjectItem(data, "request_id");
+    cJSON *device = cJSON_GetObjectItem(data, "device");
+    cJSON *key = cJSON_GetObjectItem(data, "key");
+    cJSON *code = cJSON_GetObjectItem(data, "ircode");
+    const char *request_id = cJSON_IsString(request) ? request->valuestring : "";
+    const char *address = cJSON_IsString(device) ? device->valuestring : "";
+    bool valid_address = strlen(address) == 17;
+    for(size_t i = 0; valid_address && i < 17; ++i){
+        valid_address = i % 3 == 2 ? address[i] == ':' : isxdigit(static_cast<unsigned char>(address[i]));
     }
-    return nullptr;
+    // A caller-supplied identifier is echoed only as JSON data, never formatting.
+    if(strlen(request_id) <= 64 && valid_address && cJSON_IsString(key) &&
+            strlen(key->valuestring) == 18 && (!code || cJSON_IsString(code))){
+        BLEAddress addr(address);
+        m_lock.Lock();
+        bool found = m_mapInfos.find(addr) != m_mapInfos.end();
+        m_lock.Unlock();
+        if(!found){
+            result.status = "device_not_bound";
+        } else {
+            size_t length = code ? strlen(code->valuestring) : 0;
+            uint8_t *key_bytes = ReadStreamFromASC(key->valuestring);
+            uint8_t *code_bytes = length ? ReadStreamFromASC(code->valuestring) : nullptr;
+            if(key_bytes && (!code || (length > 0 && length % 2 == 0 && code_bytes))){
+                result = m_pRemoterInterface->SendIRCode(addr, key_bytes, 9, code_bytes, length / 2);
+                if(result.confirmed) led_set_mode(LED_MODE_FAST_BLINK, 1);
+            }
+            free(key_bytes);
+            free(code_bytes);
+        }
+    }
+    cJSON *reply = cJSON_CreateObject();
+    cJSON_AddStringToObject(reply, "type", "irsend_result");
+    cJSON *payload = cJSON_AddObjectToObject(reply, "data");
+    cJSON_AddStringToObject(payload, "request_id", strlen(request_id) <= 64 ? request_id : "");
+    cJSON_AddStringToObject(payload, "device", address);
+    cJSON_AddBoolToObject(payload, "success", result.confirmed);
+    cJSON_AddBoolToObject(payload, "confirmed", result.confirmed);
+    cJSON_AddBoolToObject(payload, "cached", result.cached);
+    cJSON_AddStringToObject(payload, "status", result.status);
+    cJSON_AddNumberToObject(payload, "ack", result.ack);
+    cJSON_AddNumberToObject(payload, "elapsed_ms", (esp_timer_get_time() - started) / 1000);
+    char *json = cJSON_PrintUnformatted(reply);
+    cJSON_Delete(reply);
+    ESP_LOGI(LOG_TAG, "IR result for %s: %s (ack %02x)", address, result.status, result.ack);
+    return json;
 }
 
 char * Kernel::process_message_recvir(cJSON * data){

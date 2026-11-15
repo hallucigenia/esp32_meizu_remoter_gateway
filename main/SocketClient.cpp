@@ -8,6 +8,8 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <atomic>
+#include <cJSON.h>
+#include <ctype.h>
 #include "SocketClient.h"
 
 #define LOG_TAG "SocketClient"
@@ -24,6 +26,8 @@ SocketClient::SocketClient(int sock, const char * pAddr, int nPort,  SocketServe
     m_nPort = nPort;
     struct timeval timeout = {CONFIG_SOCKET_TIMEOUT, 0};
     setsockopt(m_socket,SOL_SOCKET,SO_RCVTIMEO,(char*)&timeout,sizeof(struct timeval));
+    struct timeval send_timeout = {5, 0};
+    setsockopt(m_socket, SOL_SOCKET, SO_SNDTIMEO, &send_timeout, sizeof(send_timeout));
     m_pServer = pServer;
     m_onclose_cb = on_close_cb;
 }
@@ -38,29 +42,44 @@ SocketClient::~SocketClient(){
 
 void SocketClient::task_Receive(void * param){
     SocketClient * pClient = (SocketClient *)param;
-    char buff[512];
+    char buff[1024];
+    size_t used = 0;
     int counter = 0;
-    while(true){
-        int len = recv(pClient->m_socket, buff, sizeof(buff) - 1, 0);
-        if(len > 0 ){
+    bool invalid = false;
+    while(!invalid){
+        int len = recv(pClient->m_socket, buff + used, sizeof(buff) - used - 1, 0);
+        if(len > 0){
             counter = 0;
-            buff[len] = 0;
-            //ESP_LOGI(LOG_TAG, "Received message from %s:%d - %s", pClient->m_pAddr, pClient->m_nPort, buff);
-            if(pClient->m_onmessage_cb != nullptr){
-                pClient->m_onmessage_cb(pClient->m_pKernel, pClient, buff, len);
-            }
-        }
-        else if(len == 0){ /*closed by client*/
-            break;
-        } else{ 
-            if(errno == EAGAIN){
-                if(++counter >= 4){/*timed out in 120 seconds*/
-                    break;
+            used += len;
+            buff[used] = 0;
+            while(used){
+                size_t whitespace = 0;
+                while(whitespace < used && isspace(static_cast<unsigned char>(buff[whitespace]))) ++whitespace;
+                if(whitespace){memmove(buff, buff + whitespace, used - whitespace + 1); used -= whitespace;}
+                if(!used) break;
+                const char *end = nullptr;
+                cJSON *message = cJSON_ParseWithOpts(buff, &end, false);
+                if(!message){
+                    if(used >= 511) invalid = true;
+                    break; // A complete JSON object may span multiple recv calls.
                 }
+                size_t consumed = end - buff;
+                bool object = cJSON_IsObject(message);
+                cJSON_Delete(message);
+                if(!object || consumed == 0 || consumed > 511){invalid = true; break;}
+                char next = buff[consumed];
+                buff[consumed] = 0;
+                if(pClient->m_onmessage_cb) pClient->m_onmessage_cb(pClient->m_pKernel, pClient, buff, consumed);
+                buff[consumed] = next;
+                memmove(buff, buff + consumed, used - consumed + 1);
+                used -= consumed;
             }
-            else{
-                break;
-            }
+        } else if(len == 0){
+            break;
+        } else if(errno == EINTR){
+            continue;
+        } else if(errno != EAGAIN || ++counter >= 4){
+            break;
         }
     }
     pClient->m_onclose_cb(pClient->m_pServer, pClient);
@@ -68,8 +87,13 @@ void SocketClient::task_Receive(void * param){
 }
 
 void SocketClient::Send(char * pMessage, int nLen){
-    send(m_socket, (void *)pMessage, nLen, 0);
-    //ESP_LOGI(LOG_TAG, "Send message to %s:%d - %s", m_pAddr, m_nPort, pMessage);
+    int sent = 0;
+    while(sent < nLen){
+        int count = send(m_socket, pMessage + sent, nLen - sent, 0);
+        if(count < 0 && errno == EINTR) continue;
+        if(count <= 0) break;
+        sent += count;
+    }
 }
 
 void SocketClient::Start(){

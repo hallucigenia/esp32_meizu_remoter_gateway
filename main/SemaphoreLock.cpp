@@ -25,3 +25,11 @@ void SemaphoreLock::Lock(){
 void SemaphoreLock::Unlock(){
     xSemaphoreGive(m_semaphore);
 }
+
+bool SemaphoreLock::Wait(uint32_t timeout_ms){
+    return xSemaphoreTake(m_semaphore, pdMS_TO_TICKS(timeout_ms)) == pdTRUE;
+}
+
+void SemaphoreLock::Reset(){
+    while(xSemaphoreTake(m_semaphore, 0) == pdTRUE) {}
+}

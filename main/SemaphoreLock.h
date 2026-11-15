@@ -14,6 +14,8 @@ public:
     ~SemaphoreLock();
     void Lock();
     void Unlock();
+    bool Wait(uint32_t timeout_ms);
+    void Reset();
 private:
     SemaphoreHandle_t m_semaphore;
 };

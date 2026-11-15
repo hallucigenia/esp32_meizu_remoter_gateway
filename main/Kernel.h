@@ -6,7 +6,7 @@
 #ifndef _KERNEL_H_
 #define _KERNEL_H_
 #include <map>
-#include <cjson.h>
+#include <cJSON.h>
 #include "SocketServer.h"
 #include "SocketClient.h"
 #include "Remoter.h"

@@ -28,6 +28,9 @@ int g_scan_threshold = CONFIG_BLE_RSSI_HIGH_THRLD;
 GATTDevice::GATTDevice(){
     m_lock = new SemaphoreLock(true);
     m_gattc_if = ESP_GATT_IF_NONE;
+    m_connid = 0xffff;
+    m_readlen = 0;
+    m_waiting = false;
     m_appid = g_appid++;
     m_connectingState = GATTConnectionState::Idle;
     g_appidmap.insert(std::pair<uint16_t, GATTDevice*>(m_appid, this));
@@ -40,32 +43,66 @@ GATTDevice::GATTDevice(){
 
 GATTDevice::~GATTDevice(){
     ClearServices();
-    esp_ble_gattc_app_unregister(m_appid);
+    esp_ble_gattc_app_unregister(m_gattc_if);
+    delete m_lock;
     if(g_appidmap.find(m_appid) != g_appidmap.end())
         g_appidmap.erase(m_appid);
 }
 
+void GATTDevice::BeginWait(esp_gattc_cb_event_t event, uint16_t handle){
+    m_lock->Reset();
+    m_waitEvent = event;
+    m_waitHandle = handle;
+    m_status = ESP_GATT_ERROR;
+    m_waiting = true;
+}
+
+bool GATTDevice::Wait(uint32_t timeout_ms){
+    bool received = m_lock->Wait(timeout_ms);
+    m_waiting = false;
+    return received && m_status == ESP_GATT_OK;
+}
+
+void GATTDevice::Complete(esp_gattc_cb_event_t event, esp_gatt_status_t status, uint16_t handle){
+    if(m_waiting && m_waitEvent == event && m_waitHandle == handle){
+        m_status = status;
+        m_lock->Unlock();
+    }
+}
+
 bool GATTDevice::Connect(BLEAddress addr){
-    m_connectingState = GATTConnectionState::Connecting;
+    Close();
+    ClearServices(); // Handles belong to one device; do not reuse across pucks.
     m_addr = addr;
+    m_connectingState = GATTConnectionState::Connecting;
+    BeginWait(ESP_GATTC_DIS_SRVC_CMPL_EVT);
     esp_err_t ret = esp_ble_gattc_open(m_gattc_if, *m_addr.getNative(), BLE_ADDR_TYPE_PUBLIC, true);
-    if(ret != ESP_OK){
-        m_connectingState = GATTConnectionState::Idle;
-        ESP_LOGE("GATTDevice::Open", "Gattc open failed, error code = %x", ret);
+    if(ret != ESP_OK || !Wait(12000)){
+        m_waiting = false;
+        Close();
+        m_connectingState = GATTConnectionState::Failed;
         return false;
     }
-    else{
-        m_lock->Lock();
-    }
-    if(m_connectingState == GATTConnectionState::Connected && m_mapServices.size() == 0){
-        ret = esp_ble_gattc_search_service(m_gattc_if, m_connid, NULL);
-        m_lock->Lock();
+    BeginWait(ESP_GATTC_SEARCH_CMPL_EVT);
+    ret = esp_ble_gattc_search_service(m_gattc_if, m_connid, NULL);
+    if(ret != ESP_OK || !Wait(3000)){
+        m_waiting = false;
+        Close();
+        return false;
     }
     return m_connectingState == GATTConnectionState::Connected;
 }
 
 void GATTDevice::Close(){
-    esp_ble_gattc_close(m_gattc_if, m_connid);
+    if(m_connid != 0xffff){
+        BeginWait(ESP_GATTC_CLOSE_EVT);
+        if(esp_ble_gattc_close(m_gattc_if, m_connid) == ESP_OK) Wait(1500);
+    } else if(m_connectingState == GATTConnectionState::Connecting) {
+        esp_ble_gap_disconnect(*m_addr.getNative());
+    }
+    m_waiting = false;
+    m_connid = 0xffff;
+    m_connectingState = GATTConnectionState::Idle;
 }
 
 bool GATTDevice::Init(void * pCaller, on_bind onBind, on_device_found OnDeviceFound, on_rssi_read OnRSSIRead){
@@ -247,32 +284,42 @@ void GATTDevice::HandleEvent(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if,
     
     switch(event){
         case ESP_GATTC_OPEN_EVT:
-            // 2 When GATT virtual connection is set up, the event comes
+            if(memcmp(param->open.remote_bda, *m_addr.getNative(), ESP_BD_ADDR_LEN) != 0) break;
             if(param->open.status == ESP_GATT_OK){
+                if(m_connectingState != GATTConnectionState::Connecting){
+                    esp_ble_gattc_close(m_gattc_if, param->open.conn_id);
+                    break;
+                }
                 m_connid = param->open.conn_id;
                 esp_ble_gap_read_rssi(*m_addr.getNative());
-            }
-            else {
+            } else {
                 m_connectingState = GATTConnectionState::Failed;
+                Complete(ESP_GATTC_DIS_SRVC_CMPL_EVT, param->open.status);
+            }
+            break;
+        case ESP_GATTC_DIS_SRVC_CMPL_EVT:
+            if(param->dis_srvc_cmpl.conn_id != m_connid) break;
+            m_connectingState = param->dis_srvc_cmpl.status == ESP_GATT_OK ?
+                GATTConnectionState::Connected : GATTConnectionState::Failed;
+            Complete(event, param->dis_srvc_cmpl.status);
+            break;
+        case ESP_GATTC_CLOSE_EVT:
+            if(param->close.conn_id != m_connid) break;
+            Complete(event, param->close.status);
+            m_connid = 0xffff;
+            m_connectingState = GATTConnectionState::Idle;
+            break;
+        case ESP_GATTC_DISCONNECT_EVT:
+            if(param->disconnect.conn_id != m_connid) break;
+            m_connectingState = GATTConnectionState::Idle;
+            m_connid = 0xffff;
+            if(m_waiting){
+                m_status = ESP_GATT_ERROR;
                 m_lock->Unlock();
             }
             break;
-        case ESP_GATTC_CONNECT_EVT: 
-            // 40 When the ble physical connection is set up, the event comes
-            break;
-        case ESP_GATTC_DIS_SRVC_CMPL_EVT: 
-            // 46 When the ble discover service complete, the event comes
-            // 40 2 46
-            m_connectingState = GATTConnectionState::Connected;
-            m_lock->Unlock();
-            break;
-        case ESP_GATTC_DISCONNECT_EVT:
-            // 41 When the ble physical connection disconnected, the event comes
-            break;
         case ESP_GATTC_SEARCH_CMPL_EVT:
-            // 6 When GATT service discovery is completed, the event comes
-            //ESP_LOGW(LOG_TAG, "ESP_GATTC_SEARCH_CMPL_EVT Unlock");
-            m_lock->Unlock();
+            if(param->search_cmpl.conn_id == m_connid) Complete(event, param->search_cmpl.status);
             break;
         case ESP_GATTC_SEARCH_RES_EVT:{
             // 7 When GATT service discovery result is got, the event comes
@@ -289,20 +336,27 @@ void GATTDevice::HandleEvent(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if,
             }
             break;
         case ESP_GATTC_READ_CHAR_EVT:
-            if(param->read.status == ESP_GATT_OK){
+            if(param->read.conn_id != m_connid || !m_waiting || m_waitEvent != event || m_waitHandle != param->read.handle) break;
+            m_readlen = 0;
+            if(param->read.status == ESP_GATT_OK && param->read.value_len < sizeof(m_readbuff)){
                 m_readlen = param->read.value_len;
                 memcpy(m_readbuff, param->read.value, m_readlen);
                 m_readbuff[m_readlen] = 0;
             }
-            else{
-                m_readlen = 0;
-            }
-            m_lock->Unlock();
+            Complete(event, param->read.status, param->read.handle);
             break;
         case ESP_GATTC_WRITE_CHAR_EVT:
-            m_lock->Unlock();
+        case ESP_GATTC_WRITE_DESCR_EVT:
+            if(param->write.conn_id == m_connid) Complete(event, param->write.status, param->write.handle);
+            break;
+        case ESP_GATTC_REG_FOR_NOTIFY_EVT:
+            Complete(event, param->reg_for_notify.status, param->reg_for_notify.handle);
+            break;
+        case ESP_GATTC_UNREG_FOR_NOTIFY_EVT:
+            Complete(event, param->unreg_for_notify.status, param->unreg_for_notify.handle);
             break;
         case ESP_GATTC_NOTIFY_EVT:
+            if(param->notify.conn_id != m_connid) break;
             for (auto &it : m_mapServices){
                 GATTRemoteCharacteristic *pCharacteristic = it.second->GetCharacteristicByHandle(param->notify.handle);
                 if(pCharacteristic != nullptr){
@@ -334,28 +388,39 @@ GATTRemoteService * GATTDevice::GetService(BLEUUID uuid){
     return ret;
 }
 
-bool GATTDevice::Read(GATTRemoteCharacteristic * pCharacteristic){
-    bool ret = false;
-    if(pCharacteristic != nullptr){
-        ret = pCharacteristic->Read();
-        if(ret){
-            m_lock->Lock();
-            if(m_readlen == 0){
-                ret = false;
-            }
-        }
-    }
-    return ret;
+bool GATTDevice::Read(GATTRemoteCharacteristic *characteristic){
+    m_readlen = 0;
+    if(!characteristic || m_connectingState != GATTConnectionState::Connected) return false;
+    BeginWait(ESP_GATTC_READ_CHAR_EVT, characteristic->GetHandle());
+    if(!characteristic->Read()) {m_waiting = false; return false;}
+    if(!Wait(1000)){Close(); return false;}
+    return m_readlen > 0;
 }
 
-bool GATTDevice::Write(GATTRemoteCharacteristic * pCharacteristic, uint8_t* data, uint16_t length, bool response){
-    bool ret = false;
-    if(pCharacteristic != nullptr){
-        ret = pCharacteristic->Write(data, length, response);
-        if(ret){
-            m_lock->Lock();
-        }
-    }
-    return ret;
+bool GATTDevice::Write(GATTRemoteCharacteristic *characteristic, uint8_t *data, uint16_t length, bool response){
+    if(!characteristic || m_connectingState != GATTConnectionState::Connected) return false;
+    BeginWait(ESP_GATTC_WRITE_CHAR_EVT, characteristic->GetHandle());
+    if(!characteristic->Write(data, length, response)) {m_waiting = false; return false;}
+    if(!Wait(1000)){Close(); return false;}
+    return true;
 }
 
+bool GATTDevice::Subscribe(GATTRemoteCharacteristic *characteristic, bool enable){
+    if(!characteristic) return false;
+    const uint16_t handle = characteristic->GetHandle();
+    BeginWait(enable ? ESP_GATTC_REG_FOR_NOTIFY_EVT : ESP_GATTC_UNREG_FOR_NOTIFY_EVT, handle);
+    if(!(enable ? characteristic->RegNotify() : characteristic->UnregNotify())) {m_waiting = false; return false;}
+    if(!Wait(1000)) return false;
+    if(!enable) return true; // Disconnect resets the remote CCCD state.
+    esp_bt_uuid_t uuid = {};
+    uuid.len = ESP_UUID_LEN_16;
+    uuid.uuid.uuid16 = ESP_GATT_UUID_CHAR_CLIENT_CONFIG;
+    esp_gattc_descr_elem_t descriptor;
+    uint16_t count = 1;
+    if(esp_ble_gattc_get_descr_by_char_handle(m_gattc_if, m_connid, handle, uuid, &descriptor, &count) != ESP_GATT_OK || count != 1) return false;
+    uint8_t value[2] = {1, 0};
+    BeginWait(ESP_GATTC_WRITE_DESCR_EVT, descriptor.handle);
+    if(esp_ble_gattc_write_char_descr(m_gattc_if, m_connid, descriptor.handle, 2, value,
+            ESP_GATT_WRITE_TYPE_RSP, ESP_GATT_AUTH_REQ_NONE) != ESP_OK) {m_waiting = false; return false;}
+    return Wait(1000);
+}

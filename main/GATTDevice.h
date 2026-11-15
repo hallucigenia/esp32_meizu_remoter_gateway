@@ -36,6 +36,7 @@ public:
     static bool StartScan();
     static bool StopScan();
     bool Read(GATTRemoteCharacteristic * pCharacteristic);
+    bool Subscribe(GATTRemoteCharacteristic *characteristic, bool enable);
     bool Write(GATTRemoteCharacteristic * pCharacteristic, uint8_t* data, uint16_t length, bool response = false);
     virtual void OnNotify(GATTRemoteCharacteristic * pCharacteristic, uint8_t * data, uint16_t length) = 0;
     GATTRemoteService * GetService(const char * uuid);
@@ -53,6 +54,13 @@ private:
     static void GATTEventHandler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if, esp_ble_gattc_cb_param_t *param);
     void HandleEvent(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if, esp_ble_gattc_cb_param_t *param);
     void ClearServices();
+    void BeginWait(esp_gattc_cb_event_t event, uint16_t handle = 0);
+    bool Wait(uint32_t timeout_ms);
+    void Complete(esp_gattc_cb_event_t event, esp_gatt_status_t status, uint16_t handle = 0);
+    esp_gattc_cb_event_t m_waitEvent;
+    uint16_t m_waitHandle;
+    volatile bool m_waiting;
+    volatile esp_gatt_status_t m_status;
 protected:
     SemaphoreLock * m_lock;
     uint16_t m_appid;
