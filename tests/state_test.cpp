@@ -20,6 +20,11 @@ int main(){
     assert(cJSON_GetObjectItem(parsed,"temperature")->valuedouble==0);
     assert(fabs(cJSON_GetObjectItem(parsed,"voltage")->valuedouble-2.9)<.001);
     cJSON_free(wire);cJSON_Delete(parsed);cJSON_Delete(json);
+    missing.update_temperature(24.59f);missing.update_humidity(35.85f);
+    json = missing.ToJSON();
+    assert(fabs(cJSON_GetObjectItem(json,"temperature")->valuedouble-24.59)<1e-9);
+    assert(fabs(cJSON_GetObjectItem(json,"humidity")->valuedouble-35.85)<1e-9);
+    cJSON_Delete(json);
     for(int n=0;n<10000;++n){
         MEIZURemoterInfo info;
         std::string long_value(255,'x');info.update_manufacturer(long_value.data(),long_value.size());

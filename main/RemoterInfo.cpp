@@ -1,5 +1,6 @@
 /* Created by @georgezhao2010; maintained by this fork. */
 #include "RemoterInfo.h"
+#include <cmath>
 
 static void Update(std::string &target, const char *value, uint16_t length){
     if(value && length) target.assign(value, length > 255 ? 255 : length);
@@ -28,11 +29,11 @@ cJSON *MEIZURemoterInfo::ToJSON() const {
     if(has_model()) cJSON_AddStringToObject(json,"model",m_model.c_str());
     // Keep the original wire spelling for existing HA clients.
     if(has_firmware()) cJSON_AddStringToObject(json,"fireware",m_firmware.c_str());
-    if(m_hasTemperature) cJSON_AddNumberToObject(json,"temperature",m_temperature);
-    if(m_hasHumidity) cJSON_AddNumberToObject(json,"humidity",m_humidity);
+    if(m_hasTemperature) cJSON_AddNumberToObject(json,"temperature",std::round(double(m_temperature)*100)/100);
+    if(m_hasHumidity) cJSON_AddNumberToObject(json,"humidity",std::round(double(m_humidity)*100)/100);
     if(m_hasVoltage){
         cJSON_AddNumberToObject(json,"battery",m_battery);
-        cJSON_AddNumberToObject(json,"voltage",m_voltage);
+        cJSON_AddNumberToObject(json,"voltage",std::round(double(m_voltage)*10)/10);
     }
     if(m_rssi != -127) cJSON_AddNumberToObject(json,"rssi",m_rssi);
     return json;
