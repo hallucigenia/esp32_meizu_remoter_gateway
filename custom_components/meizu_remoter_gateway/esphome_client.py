@@ -90,6 +90,8 @@ class ESPHomeGatewayClient(GatewayClient):
             self._learn_context = "remote"
 
     async def send_ir(self, message, timeout=70):
+        if self.ir_lock.locked() or self.pending_learn:
+            raise OSError("ESPHome controller is busy; the request was not queued")
         # The MCU bounds starting a request to 15s and its active send to 45s.
         # Leave time for both, rather than timing out HA while the MCU is still working.
         return await super().send_ir(message, timeout)

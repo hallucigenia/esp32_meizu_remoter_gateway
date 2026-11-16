@@ -102,6 +102,15 @@ class ESPHomeTransportTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(OSError): await task
         self.assertEqual(len([call for call in self.services.calls if call["operation"] == "send"]), 2)
 
+    async def test_concurrent_send_is_rejected_instead_of_transmitting_after_the_first_request(self):
+        task, request_id = await self.begin_send()
+        packet = {"type": "irsend", "data": {"device": ADDRESS, "key": "1e001c000000000000"}}
+        with self.assertRaisesRegex(OSError, "not queued"):
+            await self.client.send_ir(packet)
+        self.assertEqual(len([call for call in self.services.calls if call["operation"] == "send"]), 1)
+        self.bus.fire(event(request_id))
+        await task
+
     async def test_learning_ready_capture_conversion_and_no_transmission(self):
         progress = []
         context = "客厅电视📺"

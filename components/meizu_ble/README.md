@@ -78,6 +78,8 @@ complete hexadecimal `ir_code`. A cache miss without a complete code fails expli
 The component sends 15-byte data fragments, handles the puck's missing-fragment
 requests, and confirms only a cache `0x04` or final upload `0x02` acknowledgement.
 It never retries a whole IR command automatically after an ambiguous timeout.
+The HA transport rejects concurrent sends rather than holding a second command
+behind the first and transmitting it much later.
 
 `on_event` receives `const MeizuEvent &event`. Relevant fields:
 
