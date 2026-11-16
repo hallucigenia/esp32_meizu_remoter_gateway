@@ -6,7 +6,7 @@ from copy import deepcopy
 from homeassistant.components.remote import RemoteEntity, RemoteEntityFeature
 from homeassistant.components import persistent_notification
 from homeassistant.core import callback
-from homeassistant.exceptions import ServiceValidationError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
 from .entity import MeizuEntity
 
@@ -78,6 +78,9 @@ class MeizuRemote(MeizuEntity, RemoteEntity):
                         title=f"学习 {device} / {command}", notification_id=notification)
             try:
                 await self.runtime.learn_command(self.address, device, command, timeout=int(timeout), progress=progress)
+            except asyncio.CancelledError as error:
+                # Cancelling the capture must still finish HA's service request.
+                raise HomeAssistantError("学习已取消") from error
             finally:
                 persistent_notification.async_dismiss(self.hass, notification)
 

@@ -6,10 +6,12 @@ from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
 import threading
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 from homeassistant.core import HassJob, HassJobType, HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 
 ROOT = Path(__file__).resolve().parents[2] / "custom_components/meizu_remoter_gateway"
 PACKAGE = "meizu_real_ha_event_test"
@@ -20,6 +22,10 @@ SPEC = importlib.util.spec_from_file_location(PACKAGE + ".esphome_client", ROOT 
 module = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = module
 SPEC.loader.exec_module(module)
+REMOTE_SPEC = importlib.util.spec_from_file_location(PACKAGE + ".remote", ROOT / "remote.py")
+remote_module = importlib.util.module_from_spec(REMOTE_SPEC)
+sys.modules[REMOTE_SPEC.name] = remote_module
+REMOTE_SPEC.loader.exec_module(remote_module)
 
 SETTINGS = {"esphome_device_id": "synthetic-node", "esphome_service": "test_node_meizu_puck", "api_source": "meizu_puck",
             "address": "02:00:00:00:00:01", "serialno": "ABC123"}
@@ -80,6 +86,33 @@ class RealEventBusTests(unittest.IsolatedAsyncioTestCase):
         result = await asyncio.wait_for(task, 2)
         self.assertTrue(result["confirmed"] and result["bridge_acknowledged"])
         self.assertEqual(result["ack"], 4)
+
+    async def test_cancelled_remote_learning_returns_service_error_to_caller(self):
+        started = asyncio.Event()
+        runtime = SimpleNamespace(serial="ABC123", learning_task=None)
+
+        async def learn_command(*args, **kwargs):
+            runtime.learning_task = asyncio.current_task()
+            started.set()
+            await asyncio.Event().wait()
+
+        runtime.learn_command = learn_command
+        remote = remote_module.MeizuRemote(runtime, SETTINGS["address"])
+        remote.hass = self.hass
+
+        async def learn_service(call):
+            await remote.async_learn_command(device="tv", command=["power"], timeout=15)
+
+        self.hass.services.async_register("test", "learn", learn_service)
+        with patch.object(remote_module.persistent_notification, "async_dismiss") as dismiss:
+            operation = asyncio.create_task(self.hass.services.async_call("test", "learn", blocking=True))
+            await asyncio.wait_for(started.wait(), 2)
+            # GatewayRuntime.cancel_learning cancels the task doing the capture.
+            # Its caller must get a service result, rather than lose its WS reply.
+            runtime.learning_task.cancel()
+            with self.assertRaisesRegex(HomeAssistantError, "取消"):
+                await asyncio.wait_for(operation, 2)
+            dismiss.assert_called_once_with(self.hass, "meizu_learn_ABC123")
 
 
 if __name__ == "__main__":
