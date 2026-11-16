@@ -88,6 +88,54 @@ struct Fixture {
   }
 };
 
+void poll_backoff_tests() {
+  for (uint32_t start : {1000u, 0xffff0000u}) {
+    Fixture f;
+    f.node.set_update_interval(60000);
+    uint32_t due = start;
+    // Exercise every backoff step, its cap, and millis() wrapping.
+    const uint32_t delays[] = {5000, 10000, 20000, 40000, 80000, 160000, 320000, 640000, 900000, 900000};
+    for (unsigned i = 0; i < 10; i++) {
+      // First poll is still scheduled by setup(); move the clock without polling
+      // for the wrap case, then explicitly request this initial sample.
+      esphome::test_now = due;
+      if (i == 0) f.node.update();
+      f.node.loop();
+      assert(f.parent.connections == int(i + 1));
+      esp_ble_gattc_cb_param_t failure;
+      failure.open.status = 1;
+      f.node.gattc_event_handler(ESP_GATTC_OPEN_EVT, 1, &failure);
+      assert(f.events.back().operation == "poll" && f.events.back().status == "connect_failed");
+      f.parent.current = esphome::esp32_ble_tracker::ClientState::IDLE;
+      const int connections = f.parent.connections;
+      for (uint32_t elapsed = 60000; elapsed < delays[i]; elapsed += 60000) {
+        esphome::test_now = due + elapsed;
+        f.node.update();  // What PollingComponent's one-minute scheduler invokes.
+        f.node.loop();
+        assert(f.parent.connections == connections);
+      }
+      esphome::test_now = due + delays[i] - 1;
+      f.node.loop();
+      assert(f.parent.connections == connections);
+      due += delays[i];
+    }
+    // At the actual deadline a new poll starts, and a real sample clears backoff.
+    esphome::test_now = due;
+    f.node.loop();
+    assert(f.parent.connections == 11);
+    f.search(); f.node.loop();
+    uint8_t seq = writes.back()[2]; f.written(); f.node.loop();
+    f.read(frame(seq, 0x11, {0, 0, 0, 0})); f.node.loop();
+    seq = writes.back()[2]; f.written(); f.node.loop();
+    f.read(frame(seq, 0x10, {30})); f.node.loop();
+    assert(f.events.back().status == "ok");
+    f.parent.current = esphome::esp32_ble_tracker::ClientState::IDLE;
+    esphome::test_now = due + 1;
+    f.node.update(); f.node.loop();
+    assert(f.parent.connections == 12);
+  }
+}
+
 void runtime_tests(const std::vector<uint8_t> &raw,const std::string &expected_code,const std::string &expected_key) {
   const std::string key="1e001c000000000000";
   {
@@ -154,7 +202,10 @@ void runtime_tests(const std::vector<uint8_t> &raw,const std::string &expected_c
 }
 
 int main(int argc,char **argv) {
-  if(argc>1 && std::string(argv[1])=="codec") {
+  if(argc>1 && std::string(argv[1])=="poll-backoff") {
+    poll_backoff_tests();
+    std::cout << "Periodic polling preserves failure backoff\n";
+  } else if(argc>1 && std::string(argv[1])=="codec") {
     std::string raw_hex,context_hex,digest_hex;
     while(std::cin>>raw_hex>>context_hex>>digest_hex) {
       auto raw=decode(raw_hex), context=decode(context_hex), digest=decode(digest_hex);

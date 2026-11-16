@@ -1,12 +1,14 @@
 """Native ESPHome transport: origin checks, real acknowledgements and cancellation."""
 import asyncio
 import importlib.util
+import inspect
 import json
 from pathlib import Path
+import threading
 from types import ModuleType, SimpleNamespace
 import sys
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 ROOT = Path(__file__).resolve().parents[2] / "custom_components/meizu_remoter_gateway"
 PACKAGE = "meizu_esphome_test_package"
@@ -16,7 +18,14 @@ sys.modules[PACKAGE] = package
 SPEC = importlib.util.spec_from_file_location(PACKAGE + ".esphome_client", ROOT / "esphome_client.py")
 module = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = module
-SPEC.loader.exec_module(module)
+# Keep these protocol tests dependency-free, but preserve HA's callback marker.
+core = ModuleType("homeassistant.core")
+def callback(func):
+    func._hass_callback = True
+    return func
+core.callback = callback
+with patch.dict(sys.modules, {"homeassistant": ModuleType("homeassistant"), "homeassistant.core": core}):
+    SPEC.loader.exec_module(module)
 ADDRESS = "02:00:00:00:00:01"
 SETTINGS = {"esphome_device_id": "synthetic-node", "esphome_service": "test_node_meizu_puck", "api_source": "meizu_puck",
             "address": ADDRESS, "serialno": "ABC123"}
@@ -24,13 +33,27 @@ SAMPLE = json.loads((Path(__file__).parent / "fixtures/learned.json").read_text(
 
 
 class Bus:
-    def __init__(self): self.listeners = []
+    def __init__(self): self.listeners, self.jobs = [], []
     def async_listen(self, event_type, callback):
         assert event_type == "esphome.meizu_ble"
         self.listeners.append(callback)
         return lambda: self.listeners.remove(callback)
     def fire(self, values):
-        for callback in list(self.listeners): callback(SimpleNamespace(data=values))
+        loop = asyncio.get_running_loop()
+        for listener in list(self.listeners):
+            event = SimpleNamespace(data=values)
+            if getattr(listener, "_hass_callback", False):
+                listener(event)
+            elif inspect.iscoroutinefunction(listener):
+                self.jobs.append(loop.create_task(listener(event)))
+            else:
+                # Like HassJob: an unmarked sync listener runs in the executor.
+                self.jobs.append(loop.run_in_executor(None, listener, event))
+
+    async def drain(self):
+        jobs, self.jobs = self.jobs, []
+        if jobs:
+            await asyncio.gather(*jobs)
 
 
 class Services:
@@ -52,6 +75,36 @@ def event(request_id, **overrides):
             "voltage": "3", "battery": "100", **overrides}
 
 
+class EventDispatchTests(unittest.IsolatedAsyncioTestCase):
+    async def test_unmarked_listener_runs_in_executor_and_marked_listener_stays_in_loop(self):
+        bus, threads = Bus(), {}
+        loop_thread = threading.get_ident()
+        bus.async_listen("esphome.meizu_ble", lambda event: threads.update(executor=threading.get_ident()))
+        @callback
+        def in_loop(event):
+            threads["callback"] = threading.get_ident()
+        bus.async_listen("esphome.meizu_ble", in_loop)
+        bus.fire({})
+        await bus.drain()
+        self.assertNotEqual(threads["executor"], loop_thread)
+        self.assertEqual(threads["callback"], loop_thread)
+
+    async def test_status_result_completes_future_in_event_loop(self):
+        loop = asyncio.get_running_loop()
+        loop.set_debug(True)
+        bus = Bus()
+        client = module.ESPHomeGatewayClient(SimpleNamespace(bus=bus), SETTINGS, lambda message: None)
+        waiter = loop.create_future()
+        # A scheduled done callback makes asyncio debug detect a foreign-thread write.
+        waiter.add_done_callback(lambda future: None)
+        client.pending["config_info"] = waiter
+        client._status_requests["status-id"] = "config_info"
+        bus.async_listen("esphome.meizu_ble", client._event)
+        bus.fire(event("status-id", operation="status"))
+        await bus.drain()
+        self.assertEqual(waiter.result()["data"]["serialno"], SETTINGS["serialno"])
+
+
 class ESPHomeTransportTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.bus = Bus()
@@ -65,6 +118,7 @@ class ESPHomeTransportTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         await self.client.close()
+        await self.bus.drain()
 
     async def begin_send(self, code=""):
         packet = {"type": "irsend", "data": {"device": ADDRESS, "key": "1e001c000000000000"}}

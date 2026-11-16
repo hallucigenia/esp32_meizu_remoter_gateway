@@ -46,6 +46,9 @@ class NativeTests(unittest.TestCase):
         converted = codec.convert_capture(bytes.fromhex(sample["raw"]), "tv")
         self.execute([], f'{sample["raw"]} {sample["code"]} {converted["key"]}\n')
 
+    def test_periodic_polling_preserves_capped_retry_backoff_and_recovers(self):
+        self.execute(["poll-backoff"], "")
+
     def test_cpp_conversion_matches_independent_vectors_and_unicode_cache_keys(self):
         rows, expected = [], []
         for sample in SAMPLES:

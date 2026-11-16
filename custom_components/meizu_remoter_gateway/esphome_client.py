@@ -4,6 +4,8 @@ import math
 import re
 from uuid import uuid4
 
+from homeassistant.core import callback
+
 from .client import GatewayClient, normalize_address
 from .codec import convert_capture
 
@@ -131,6 +133,7 @@ class ESPHomeGatewayClient(GatewayClient):
                 raise ValueError("Incomplete ESPHome measurement")
         return {"device": self.address, "available": int(available), "measurement_age_ms": age, "status": status}
 
+    @callback
     def _event(self, event):
         data = event.data
         if not isinstance(data, dict) or data.get("protocol") != "meizu_ble_v1" or data.get("device_id") != self.device_id or data.get("source") != self.source:

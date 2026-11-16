@@ -39,7 +39,10 @@ void MeizuBLE::invalidate_() {
   if (this->available_sensor_) this->available_sensor_->publish_state(false);
 }
 
-void MeizuBLE::update() { this->next_poll_ = millis(); }
+void MeizuBLE::update() {
+  // loop() owns failed-poll retries; periodic refreshes must preserve their deadline.
+  if (this->failures_ == 0) this->next_poll_ = millis();
+}
 
 bool MeizuBLE::accept_(const std::string &request_id, Operation operation) {
   if (request_id.empty() || request_id.size() > 64) return false;

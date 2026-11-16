@@ -3,6 +3,17 @@ on: [push, pull_request, workflow_dispatch]
 permissions:
   contents: read
 jobs:
+  real-event-bus:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Install Home Assistant for real event dispatch regressions
+        run: pip install --no-compile 'homeassistant==2026.11.1'
+      - name: Check native API results on the real HA event bus with asyncio debug
+        run: python -B -m unittest discover -s tests/ha_core -v
   test-and-package:
     runs-on: ubuntu-22.04
     strategy:

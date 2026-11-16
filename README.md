@@ -49,6 +49,8 @@ HA 离线测试使用 Python 3.11+，只连接测试创建的回环 TCP 服务�
 python3 -B -m unittest discover -s tests/meizu_remoter_gateway -v
 ```
 
+另有真实 HA 事件总线回归：在安装 `homeassistant==2026.11.1` 的 Python 3.14 环境中运行 `python -B -m unittest discover -s tests/ha_core -v`。测试启用 asyncio debug，检查接入握手、发码回执和实体状态更新的事件循环上下文；使用临时 HA 实例，不连接设备。
+
 固件使用 ESP-IDF 4.3.7 构建。主机 sanitizer 测试：
 
 ```sh
