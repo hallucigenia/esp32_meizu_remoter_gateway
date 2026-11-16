@@ -90,7 +90,8 @@ behind the first and transmitting it much later.
 | `status` | `ok` or an explicit failure reason |
 | `confirmed`, `cached`, `ack` | Actual Bluetooth send acknowledgement |
 | `received`, `length`, `timeout_ms` | Capture progress; countdown starts at real `0x07` readiness |
-| `raw`, `ir_code`, `key`, `carrier_hz` | Complete, validated on-device learning result |
+| `raw` | Complete capture, also retained if conversion reports `unsupported_capture` |
+| `ir_code`, `key`, `carrier_hz` | Validated conversion for successful learning; rejected captures have no send code |
 
 Learning never uploads or transmits a captured command. A separate send action is
 required for a physical test. Captures are bounded to 1500 bytes; direct send payloads

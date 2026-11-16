@@ -157,19 +157,28 @@ void runtime_tests(const std::vector<uint8_t> &raw,const std::string &expected_c
     assert(reads == 1 && writes.size() == 1);
     f.read(frame(seq,4,{1})); f.node.loop(); assert(f.events.back().confirmed && writes.size() == 1);
   }
-  {
+  for (bool supported : {true, false}) {
+    auto capture = raw;
+    if (!supported) capture[1] ^= 1;
     Fixture f; f.node.learn("capture","tv",15); f.node.loop(); f.search(); f.subscribed(); f.node.loop();
     assert(writes.back()[3] == 5); uint8_t seq=writes.back()[2]; f.written();
     f.notify(frame(seq,7)); f.node.loop(); assert(f.events.back().phase == "ready");
-    f.notify(frame(seq,9,{0,uint8_t(1+(raw.size()+14)/15),uint8_t(raw.size()),uint8_t(raw.size()>>8)})); f.node.loop();
-    for(size_t offset=0,index=1;offset<raw.size();offset+=15,index++) {
-      std::vector<uint8_t> payload{uint8_t(index)}; payload.insert(payload.end(),raw.begin()+offset,raw.begin()+std::min(raw.size(),offset+15));
+    f.notify(frame(seq,9,{0,uint8_t(1+(capture.size()+14)/15),uint8_t(capture.size()),uint8_t(capture.size()>>8)})); f.node.loop();
+    for(size_t offset=0,index=1;offset<capture.size();offset+=15,index++) {
+      std::vector<uint8_t> payload{uint8_t(index)}; payload.insert(payload.end(),capture.begin()+offset,capture.begin()+std::min(capture.size(),offset+15));
       f.notify(frame(seq,9,payload)); f.node.loop();
     }
     assert(writes.back()[3] == 0x0b); f.written(); f.node.loop(); assert(writes.back()[3] == 6);
-    f.written(); f.node.loop(); assert(f.events.back().phase == "complete");
-    assert(f.events.back().ir_code == expected_code && f.events.back().key == expected_key);
-    assert(esphome::api::test_events.back().at("raw") == hex_string(raw.data(),raw.size()));
+    f.written(); f.node.loop();
+    if (supported) {
+      assert(f.events.back().phase == "complete");
+      assert(f.events.back().ir_code == expected_code && f.events.back().key == expected_key);
+    } else {
+      assert(f.events.back().phase == "failed" && f.events.back().status == "unsupported_capture");
+      assert(f.events.back().ir_code.empty() && f.events.back().key.empty() && !f.events.back().confirmed);
+    }
+    assert(f.events.back().length == capture.size() && f.events.back().received == capture.size());
+    assert(esphome::api::test_events.back().at("raw") == hex_string(capture.data(),capture.size()));
     for(auto &p:writes) assert(p[3] != 3 && p[3] != 0);
   }
   {

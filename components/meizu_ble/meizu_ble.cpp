@@ -136,6 +136,9 @@ void MeizuBLE::finish_(const char *reason) {
   event.status = reason != nullptr ? reason : this->protocol_.status();
   event.phase = event.status == "ok" ? "complete" : event.status == "cancelled" ? "cancelled" : "failed";
   if (event.status == "ok" && operation == Operation::LEARN) {
+    // Preserve a complete capture for diagnostics even when conversion rejects it.
+    event.received = event.length = this->protocol_.received();
+    event.raw = hex_string(this->protocol_.raw(), event.length);
     uint32_t frequency = 0; size_t length = 0;
     if (!convert_capture(this->protocol_.raw(), this->protocol_.received(), this->request_code_, length, frequency)) {
       event.status = "unsupported_capture"; event.phase = "failed";
@@ -145,7 +148,6 @@ void MeizuBLE::finish_(const char *reason) {
       std::array<uint8_t, 9> key{};
       if (!make_cache_key(length, bytes, this->device_, key)) { event.status = "invalid_parameters"; event.phase = "failed"; }
       else {
-        event.raw = hex_string(this->protocol_.raw(), this->protocol_.received()); event.length = this->protocol_.received();
         event.ir_code = hex_string(this->request_code_.data(), length); event.key = hex_string(key.data(), key.size());
         event.carrier_hz = frequency;
       }
