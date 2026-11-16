@@ -1,6 +1,10 @@
 /build-ack/
 /build-ota/
 /release/
+/release-ha/
+__pycache__/
+*.pyc
+.pytest_cache/
 /sdkconfig.old
 /tests/ir_protocol_test
 
