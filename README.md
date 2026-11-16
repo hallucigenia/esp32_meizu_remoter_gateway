@@ -1,6 +1,6 @@
 # 魅族小圆饼 BLE 网关与 Home Assistant 集成
 
-**开发分支：**新增 [ESPHome 魅族 BLE 外部组件](components/meizu_ble/README.md) `0.1.0`，以及 HA 集成 `1.5.0` 的 ESPHome 适配。已提供配置、主机回归和固件编译验证；ESPHome 固件尚待实机验收。下方 `v0.7.4` / `ha-v1.4.0` 是既有稳定方案。
+**开发分支：**新增 [ESPHome 魅族 BLE 外部组件](components/meizu_ble/README.md) `0.1.0`，以及 HA 集成 `1.5.0` 的 ESPHome 适配。已通过单台 R16 的基本实机链路验证，包括采样、学习、发码应答、实际 HDMI 切源、取消/超时、OTA 和断电恢复；仍为实验版，验证边界见组件说明。下方 `v0.7.4` / `ha-v1.4.0` 是既有稳定方案。
 
 通过 ESP32 连接魅族 R16 小圆饼，在局域网读取温湿度、电量和蓝牙信号，并学习、保存和发送红外指令。日常运行不需要魅家 App、云服务、APK、Mac 或 Home Assistant 主机蓝牙。
 

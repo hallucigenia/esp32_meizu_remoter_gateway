@@ -26,6 +26,7 @@ class ESPHomeGatewayClient(GatewayClient):
         if not self.service.endswith("_" + self.source):
             raise ValueError("ESPHome service must end with the component's api_service name")
         self._connected = False
+        self._connecting = False
         self._unsubscribe = None
         self._status_requests = {}
         self._learn_context = "remote"
@@ -40,12 +41,17 @@ class ESPHomeGatewayClient(GatewayClient):
             raise OSError("ESPHome action is unavailable; add the ESPHome device first")
         if self._unsubscribe is None:
             self._unsubscribe = self.hass.bus.async_listen("esphome.meizu_ble", self._event)
-        self._connected = True
+        self._connected = False
+        self._connecting = True
         try:
-            return (await self.request("config_info"))["data"]
+            info = (await self.request("config_info"))["data"]
+            self._connected = True
+            return info
         except BaseException:
             await self.close()
             raise
+        finally:
+            self._connecting = False
 
     async def request(self, message_type, data=None, timeout=6):
         try:
@@ -56,9 +62,10 @@ class ESPHomeGatewayClient(GatewayClient):
                     self._status_requests.pop(request_id, None)
 
     async def send(self, message):
-        if not self.connected:
-            raise OSError("ESPHome transport is disconnected")
         kind, data = message["type"], message.get("data", {})
+        handshake = self._connecting and kind == "config_info" and self.hass.services.has_service("esphome", self.service)
+        if not self.connected and not handshake:
+            raise OSError("ESPHome transport is disconnected")
         if kind == "subscribe":
             return
         args = {"request_id": data.get("request_id", ""), "operation": "", "key": "", "ir_code": "", "timeout": 15, "device": "remote"}
@@ -196,6 +203,7 @@ class ESPHomeGatewayClient(GatewayClient):
 
     async def close(self):
         self._connected = False
+        self._connecting = False
         if self._unsubscribe is not None:
             self._unsubscribe()
             self._unsubscribe = None

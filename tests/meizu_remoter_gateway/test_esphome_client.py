@@ -76,6 +76,26 @@ def event(request_id, **overrides):
 
 
 class EventDispatchTests(unittest.IsolatedAsyncioTestCase):
+    async def test_control_path_stays_disconnected_until_status_handshake_completes(self):
+        bus = Bus()
+        services = Services(bus)
+        services.auto_status = False
+        client = module.ESPHomeGatewayClient(SimpleNamespace(bus=bus, services=services), SETTINGS, lambda message: None)
+        task = asyncio.create_task(client.connect())
+        try:
+            call = await asyncio.wait_for(services.writes.get(), 1)
+            self.assertFalse(client.connected, "Service registration is not a successful device handshake")
+            with self.assertRaises(OSError):
+                await client.request("devices")
+            bus.fire(event(call["request_id"], operation="status"))
+            await task
+            self.assertTrue(client.connected)
+        finally:
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            await client.close()
+
     async def test_unmarked_listener_runs_in_executor_and_marked_listener_stays_in_loop(self):
         bus, threads = Bus(), {}
         loop_thread = threading.get_ident()

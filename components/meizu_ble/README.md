@@ -5,9 +5,13 @@ The ESP32 connects directly to a Meizu R16 puck. ESPHome owns the Bluetooth stac
 networking, encrypted native API and OTA. The component supplies battery-powered
 polling, acknowledged IR transmission and cancellable ET4007 capture/conversion.
 
-This is a source implementation with host regressions and firmware compile checks.
-It has not yet passed physical-device acceptance as an ESPHome firmware. Keep the
-existing standalone gateway available until the migration checklist below passes.
+Basic hardware checks passed on one Meizu R16 with an ESP32-D0WD revision 1.0,
+4 MB Flash, ESPHome 2026.10.2 / ESP-IDF 5.5.6 and Home Assistant 2026.11.1.
+The trial covered real sensor samples, a 40-byte capture converted independently
+on the MCU and HA, first-upload `0x02` and cached `0x04` acknowledgements, an
+observed HDMI input change, cancellation, timeout, native OTA and power recovery.
+It also retained the original HA entry, remote identity and nine saved commands.
+This remains experimental; preserve a full Flash backup and the old installation.
 
 ## Configuration
 
@@ -183,10 +187,13 @@ the two firmware families share credentials, bindings, partitions or rollback
 semantics. First use a spare board or a deliberate USB migration with a verified
 restore path.
 
-Physical acceptance still needs: real zero/unchanged sensor readings, cache hit,
-cache miss plus upload, target appliance response, readiness timing, cancellation,
-missing packets, connection loss, power cycling, Wi-Fi recovery and original-code
-restore. Bluetooth acknowledgement alone cannot verify the appliance state.
+The hardware trial rejected an unsupported 45-byte capture without saving it;
+another attempt timed out, and a subsequent 40-byte capture succeeded. Do not
+weaken capture validation to save rejected data. Zero/unchanged samples and packet
+faults have host regressions but were not deliberately induced on hardware.
+Long air-conditioner codes, other hardware, long-term reliability and restoring
+the original full Flash remain unverified. Bluetooth acknowledgement alone cannot
+verify the appliance state; the HDMI trial included human observation.
 
 The new component and its codec are MIT licensed; see [LICENSE](LICENSE) and
 [repository attribution](../../NOTICE.md). The inherited standalone firmware's
