@@ -3,6 +3,20 @@
   "config": {
     "step": {
       "user": {
+        "title": "Connect a Meizu puck",
+        "menu_options": {
+          "tcp": "TCP gateway",
+          "esphome": "ESPHome BLE component"
+        }
+      },
+      "reconfigure": {
+        "title": "Choose transport",
+        "menu_options": {
+          "tcp_reconfigure": "TCP gateway",
+          "esphome": "ESPHome BLE component"
+        }
+      },
+      "tcp": {
         "title": "Connect a Meizu ESP32 gateway",
         "description": "Enter the IP address and TCP port of the Meizu gateway.",
         "data": {
@@ -10,7 +24,7 @@
           "port": "TCP port"
         }
       },
-      "reconfigure": {
+      "tcp_reconfigure": {
         "title": "Configure gateway OTA",
         "description": "Enter the OTA key read through USB with ota-key. Leave it blank to keep the saved key.",
         "data": {
@@ -18,11 +32,22 @@
           "port": "TCP port",
           "ota_key": "OTA key"
         }
+      },
+      "esphome": {
+        "title": "Connect through ESPHome",
+        "description": "Add the ESPHome node first. Enter its action name without esphome., the component api_service name, and the puck BLE MAC. No IR is sent by this form.",
+        "data": {
+          "esphome_device_id": "ESPHome device",
+          "esphome_service": "ESPHome action",
+          "api_source": "Component api_service",
+          "address": "Puck BLE MAC"
+        }
       }
     },
     "error": {
       "cannot_connect": "Unable to connect to the gateway. Check its address, firmware and network.",
-      "cannot_authenticate": "Could not connect or authenticate. Check the gateway address and OTA key."
+      "cannot_authenticate": "Could not connect or authenticate. Check the gateway address and OTA key.",
+      "cannot_connect_esphome": "No matching ESPHome status response. Check the device, action, api_service and puck MAC."
     },
     "abort": {
       "already_configured": "This gateway is already configured.",

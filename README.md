@@ -1,5 +1,7 @@
 # 魅族小圆饼 BLE 网关与 Home Assistant 集成
 
+**开发分支：**新增 [ESPHome 魅族 BLE 外部组件](components/meizu_ble/README.md) `0.1.0`，以及 HA 集成 `1.5.0` 的 ESPHome 适配。已提供配置、主机回归和固件编译验证；ESPHome 固件尚待实机验收。下方 `v0.7.4` / `ha-v1.4.0` 是既有稳定方案。
+
 通过 ESP32 连接魅族 R16 小圆饼，在局域网读取温湿度、电量和蓝牙信号，并学习、保存和发送红外指令。日常运行不需要魅家 App、云服务、APK、Mac 或 Home Assistant 主机蓝牙。
 
 本项目基于 [George Zhao 的 ESP32 网关](https://github.com/georgezhao2010/esp32_meizu_remoter_gateway)，增加可靠发码回执、离线恢复、原生学习与 OTA；HA 集成参考其 [原集成](https://github.com/georgezhao2010/meizu_remoter_gateway)。源码许可范围见 [NOTICE](NOTICE.md)。
@@ -28,7 +30,7 @@ OTA 首次配置需要通过 USB 串口读取每台网关的独立密钥，再�
 - 设备离线后持续退避探测；网络恢复保留真实测量年龄，缓存不冒充新采样。
 - 固件支持认证 HTTPS OTA、启动确认、回滚和最小恢复模式；升级前仍需核对硬件与分区兼容性。
 
-蓝牙回执表示小圆饼确认发送，无法证明被控电器已经切换输入或改变电源状态。当前 TCP 输入限 511 字节；空调长报文尚待实机验证。本仓库提供独立 ESP-IDF 固件，尚未实现 ESPHome 组件。
+蓝牙回执表示小圆饼确认发送，无法证明被控电器已经切换输入或改变电源状态。独立网关的 TCP 输入限 511 字节；空调长报文尚待实机验证。ESPHome 组件使用标准原生 API，接口与迁移边界见其单独说明。
 
 ## 源码与离线验证
 

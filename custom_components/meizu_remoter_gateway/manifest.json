@@ -1,11 +1,14 @@
 {
   "domain": "meizu_remoter_gateway",
   "name": "魅族蓝牙网关",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "config_flow": true,
-  "documentation": "https://github.com/hallucigenia/esp32_meizu_remoter_gateway/blob/master/custom_components/meizu_remoter_gateway/README.md",
+  "documentation": "https://github.com/hallucigenia/esp32_meizu_remoter_gateway/blob/feature/esphome-component/custom_components/meizu_remoter_gateway/README.md",
   "requirements": [],
   "dependencies": [],
   "codeowners": [],
-  "iot_class": "local_push"
+  "iot_class": "local_push",
+  "after_dependencies": [
+    "esphome"
+  ]
 }

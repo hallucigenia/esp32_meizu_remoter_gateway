@@ -1,6 +1,8 @@
 # 魅族蓝牙网关：Home Assistant 集成
 
-版本 **1.4.0**。通过局域网 TCP 连接 ESP32 网关，不依赖 HA 主机蓝牙、`bluepy`、MQTT 或原厂 App。每只已绑定的小圆饼提供温度、湿度、电量、电压、RSSI、最近测量与原生红外遥控实体。
+开发版 **1.5.0** 新增 [ESPHome BLE 组件连接方式](https://github.com/hallucigenia/esp32_meizu_remoter_gateway/blob/feature/esphome-component/components/meizu_ble/README.md)，保留原生学习向导、命名按键库与遥控动作。该方式的传感器和固件更新由标准 ESPHome 集成提供，魅族集成只增加遥控实体。已有 TCP 方式继续支持。
+
+以下是已发布 **1.4.0** 的 TCP 使用说明。稳定版安装包尚不包含 ESPHome 适配；测试新方式请使用本开发分支的集成源码。两种方式均不依赖 HA 主机蓝牙、`bluepy`、MQTT 或原厂 App。
 
 ## 安装与绑定
 

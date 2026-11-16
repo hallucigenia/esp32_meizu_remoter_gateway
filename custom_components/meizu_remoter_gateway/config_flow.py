@@ -13,6 +13,8 @@ from homeassistant.helpers import selector
 from .client import GatewayClient
 from .const import DEFAULT_PORT, DOMAIN
 from .firmware import authorization, key_bytes
+from .esphome_client import ESPHomeGatewayClient
+from .client import normalize_address
 
 
 async def verify_ota_key(client, serial, key):
@@ -36,6 +38,11 @@ class MeizuGatewayFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return MeizuLearningFlow()
 
     async def async_step_reconfigure(self, user_input=None):
+        if user_input is not None and "host" in user_input:
+            return await self.async_step_tcp_reconfigure(user_input)
+        return self.async_show_menu(step_id="reconfigure", menu_options=["tcp_reconfigure", "esphome"])
+
+    async def async_step_tcp_reconfigure(self, user_input=None):
         entry = self._get_reconfigure_entry()
         errors = {}
         if user_input is not None:
@@ -49,18 +56,23 @@ class MeizuGatewayFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 if key and (entered_key or "ota_pull_v1" in client.capabilities):
                     await verify_ota_key(client, info["serialno"].upper(), key)
                 return self.async_update_reload_and_abort(entry, data_updates={
-                    "host": user_input["host"], "port": user_input["port"], **({"ota_key": key} if key else {})})
+                    "transport": "tcp", "host": user_input["host"], "port": user_input["port"], **({"ota_key": key} if key else {})})
             except (OSError, TimeoutError, ValueError, KeyError):
                 errors["base"] = "cannot_authenticate"
             finally:
                 await client.close()
-        return self.async_show_form(step_id="reconfigure", errors=errors, data_schema=vol.Schema({
-            vol.Required("host", default=entry.data["host"]): str,
-            vol.Required("port", default=entry.data["port"]): vol.All(vol.Coerce(int), vol.Range(min=1, max=65535)),
+        return self.async_show_form(step_id="tcp_reconfigure", errors=errors, data_schema=vol.Schema({
+            vol.Required("host", default=entry.data.get("host", "")): str,
+            vol.Required("port", default=entry.data.get("port", DEFAULT_PORT)): vol.All(vol.Coerce(int), vol.Range(min=1, max=65535)),
             vol.Optional("ota_key"): selector.TextSelector(selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)),
         }))
 
     async def async_step_user(self, user_input=None):
+        if user_input is not None:
+            return await self.async_step_tcp(user_input)
+        return self.async_show_menu(step_id="user", menu_options=["tcp", "esphome"])
+
+    async def async_step_tcp(self, user_input=None):
         errors = {}
         if user_input is not None:
             client = GatewayClient(user_input["host"], user_input["port"], lambda message: None)
@@ -74,9 +86,41 @@ class MeizuGatewayFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "cannot_connect"
             finally:
                 await client.close()
-        return self.async_show_form(step_id="user", errors=errors, data_schema=vol.Schema({
+        return self.async_show_form(step_id="tcp", errors=errors, data_schema=vol.Schema({
             vol.Required("host", default=(user_input or {}).get("host", "")): str,
             vol.Required("port", default=(user_input or {}).get("port", DEFAULT_PORT)): vol.All(vol.Coerce(int), vol.Range(min=1, max=65535)),
+        }))
+
+    async def async_step_esphome(self, user_input=None):
+        reconfigure = getattr(self, "context", {}).get("source") == "reconfigure"
+        entry = self._get_reconfigure_entry() if reconfigure else None
+        errors = {}
+        if user_input is not None:
+            client = None
+            try:
+                settings = {**user_input, "transport": "esphome", "address": normalize_address(user_input["address"])}
+                settings["serialno"] = entry.data["serialno"] if entry else (
+                    "ESP_" + settings["esphome_device_id"].upper() + "_" + settings["address"].replace(":", "").upper())
+                client = ESPHomeGatewayClient(self.hass, settings, lambda message: None)
+                await client.connect()
+                if entry is not None:
+                    # Keep the config-entry ID and serial: the Store and remote identity remain stable.
+                    return self.async_update_reload_and_abort(entry, data_updates=settings)
+                await self.async_set_unique_id(settings["serialno"])
+                self._abort_if_unique_id_configured(updates=settings)
+                return self.async_create_entry(title="魅族 ESPHome", data=settings)
+            except (OSError, TimeoutError, ValueError, KeyError):
+                errors["base"] = "cannot_connect_esphome"
+            finally:
+                if client is not None:
+                    await client.close()
+        previous = {**(entry.data if entry else {}), **(user_input or {})}
+        return self.async_show_form(step_id="esphome", errors=errors, data_schema=vol.Schema({
+            vol.Required("esphome_device_id", default=previous.get("esphome_device_id", "")): selector.DeviceSelector(
+                selector.DeviceSelectorConfig(integration="esphome")),
+            vol.Required("esphome_service", default=previous.get("esphome_service", "")): str,
+            vol.Required("api_source", default=previous.get("api_source", "meizu_puck")): str,
+            vol.Required("address", default=previous.get("address", "")): str,
         }))
 
 

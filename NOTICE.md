@@ -6,6 +6,12 @@ New integration changes, `tests/meizu_remoter_gateway/`, `tools/ir_compat.py`,
 and `tools/package-ha-release.py` are distributed under the same MIT terms in
 `LICENSE.home-assistant`.
 
+The new ESPHome component under `components/meizu_ble/`, its examples and the
+tests under `tests/esphome/` are MIT licensed; see the component's `LICENSE`.
+Its ET4007 codec is ported from the MIT-licensed Home Assistant codec. The new
+nonblocking BLE adapter and protocol state machine do not incorporate the legacy
+gateway's GATT, socket, Wi-Fi or OTA implementation files.
+
 The ESP32 firmware originates from
 [georgezhao2010/esp32_meizu_remoter_gateway](https://github.com/georgezhao2010/esp32_meizu_remoter_gateway).
 The inherited firmware does not contain an explicit project license. This fork

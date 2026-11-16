@@ -34,7 +34,7 @@ def normalize_address(value: str) -> str:
     return ":".join(part.zfill(2) for part in value.split(":"))
 
 
-def ir_message(address: str, key: str, ir_code: str | None = None) -> dict:
+def ir_message(address: str, key: str, ir_code: str | None = None, *, max_bytes=511) -> dict:
     data = {"device": normalize_address(address), "key": key}
     for name, value in (("key", key), ("ircode", ir_code)):
         if value is None and name == "ircode":
@@ -43,8 +43,8 @@ def ir_message(address: str, key: str, ir_code: str | None = None) -> dict:
             raise ValueError(f"{name} must contain complete hexadecimal bytes")
         data[name] = value.lower()
     message = {"type": "irsend", "data": data}
-    if len(encode(message)) > 511:
-        raise ValueError("IR command exceeds the gateway's 511-byte receive limit")
+    if len(encode(message)) > max_bytes:
+        raise ValueError(f"IR command exceeds the transport's {max_bytes}-byte receive limit")
     return message
 
 

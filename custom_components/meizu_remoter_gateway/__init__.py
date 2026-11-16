@@ -19,6 +19,7 @@ from homeassistant.helpers.event import async_track_time_interval
 
 from .client import GatewayClient, ir_message, measurement, normalize_address
 from .codec import convert_capture
+from .esphome_client import ESPHomeGatewayClient
 from .const import DOMAIN, PLATFORMS
 
 _LOGGER = logging.getLogger(__name__)
@@ -35,7 +36,7 @@ async def async_setup_entry(hass, entry):
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = runtime
     runtime.commands = await runtime.store.async_load() or {}
     try:
-        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+        await hass.config_entries.async_forward_entry_setups(entry, runtime.platforms)
     except BaseException:
         await runtime.stop()
         hass.data[DOMAIN].pop(entry.entry_id, None)
@@ -48,7 +49,7 @@ async def async_setup_entry(hass, entry):
 
 
 async def async_unload_entry(hass, entry):
-    if not await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
+    if not await hass.config_entries.async_unload_platforms(entry, entry.runtime_data.platforms):
         return False
     await entry.runtime_data.stop()
     hass.data[DOMAIN].pop(entry.entry_id)
@@ -81,7 +82,7 @@ def _register_services(hass):
                 await runtime.client.request("setinterval", data)
                 return {"update_interval": runtime.interval}
             address = normalize_address(data.pop("address"))
-            packet = ir_message(address, data.pop("key"), data.pop("ir_code", None))
+            packet = ir_message(address, data.pop("key"), data.pop("ir_code", None), max_bytes=getattr(runtime.client, "max_message_bytes", 511))
             if call.service == "store_command":
                 await runtime.save_command(address, data["device"], data["command"], packet["data"])
                 return {"stored": True, "device": data["device"], "command": data["command"]}
@@ -106,6 +107,8 @@ def _register_services(hass):
 class GatewayRuntime:
     def __init__(self, hass, entry):
         self.hass, self.entry = hass, entry
+        self.transport = entry.data.get("transport", "tcp")
+        self.platforms = [platform for platform in PLATFORMS if platform == "remote"] if self.transport == "esphome" else PLATFORMS
         self.serial = entry.data["serialno"].upper()
         self.interval = 5
         self.version = None
@@ -120,7 +123,7 @@ class GatewayRuntime:
         self.learning_task = None
         self.learning = None
         self.store = storage.Store(hass, 1, f"{DOMAIN}.{entry.entry_id}.commands")
-        self.client = GatewayClient(entry.data["host"], entry.data["port"], self.message)
+        self.client = ESPHomeGatewayClient(hass, entry.data, self.message) if self.transport == "esphome" else GatewayClient(entry.data["host"], entry.data["port"], self.message)
 
     async def connect(self):
         info = await self.client.connect()
@@ -237,6 +240,10 @@ class GatewayRuntime:
                 identifiers={(DOMAIN, address)}, connections={("bluetooth", address)}, via_device=(DOMAIN, self.serial), **details)
 
     def available(self, address, *, fresh=True):
+        if not fresh and self.transport == "esphome":
+            # Remote availability describes the control path, not a fresh sensor sample.
+            # A manual request can reconnect the resting puck and must still get its real ACK.
+            return self.client.connected and address in self.devices
         device = self.devices.get(address, {})
         last = device.get("last_measurement")
         return self.client.connected and device.get("available") == 1 and (
@@ -276,12 +283,16 @@ class GatewayRuntime:
                 progress(dict(self.learning))
 
         try:
-            raw = await self.client.learn_ir(address, timeout, update)
+            if self.transport == "esphome":
+                raw = await self.client.learn_ir(address, timeout, update, device=device)
+            else:
+                raw = await self.client.learn_ir(address, timeout, update)
             learned = convert_capture(raw, device)
-            packet = ir_message(address, learned["key"], learned["ir_code"])
+            limit = getattr(self.client, "max_message_bytes", 511)
+            packet = ir_message(address, learned["key"], learned["ir_code"], max_bytes=limit)
             # Also reserve the correlation ID used at send time, so a learned
             # long code is never saved if it cannot pass the current transport.
-            if len(json.dumps({**packet, "data": {**packet["data"], "request_id": "0" * 32}}, separators=(",", ":"))) > 511:
+            if len(json.dumps({**packet, "data": {**packet["data"], "request_id": "0" * 32}}, separators=(",", ":"))) > limit:
                 raise ValueError("此红外码超出当前网关传输长度，旧按键已保留")
             await self.save_command(address, device, name, packet["data"], {
                 key: value for key, value in learned.items() if key not in ("key", "ir_code")
@@ -305,7 +316,7 @@ class GatewayRuntime:
             raise ServiceValidationError(f"尚未采集红外码：{device}/{name}") from error
         if not self.available(address, fresh=False):
             raise HomeAssistantError("魅族遥控器或蓝牙网关不可用")
-        return await self.transmit(address, ir_message(address, command["key"], command.get("ir_code")))
+        return await self.transmit(address, ir_message(address, command["key"], command.get("ir_code"), max_bytes=getattr(self.client, "max_message_bytes", 511)))
 
     async def transmit(self, address, packet):
         try:

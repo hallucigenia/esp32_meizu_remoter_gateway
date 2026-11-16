@@ -5,6 +5,10 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+.esphome/
+**/secrets.yaml
+/tests/esphome/.gitignore
+/examples/.gitignore
 /sdkconfig.old
 /tests/ir_protocol_test
 

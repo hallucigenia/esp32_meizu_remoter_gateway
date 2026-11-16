@@ -16,7 +16,7 @@ from test_codec import codec, SAMPLES
 FILE = Path(__file__).resolve().parents[2] / "custom_components/meizu_remoter_gateway/__init__.py"
 TREE = ast.parse(FILE.read_text())
 RUNTIME = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "GatewayRuntime")
-NAMESPACE = {"asyncio": asyncio, "time": time, "DOMAIN": "meizu_remoter_gateway", "callback": lambda fn: fn,
+NAMESPACE = {"asyncio": asyncio, "time": time, "DOMAIN": "meizu_remoter_gateway", "PLATFORMS": ["sensor", "remote", "update"], "callback": lambda fn: fn,
              "GatewayClient": client.GatewayClient, "normalize_address": client.normalize_address,
              "ir_message": client.ir_message, "HomeAssistantError": RuntimeError, "ServiceValidationError": ValueError,
              "measurement": client.measurement,
@@ -42,6 +42,15 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.runtime.available(ADDRESS))
         self.assertTrue(self.runtime.available(ADDRESS, fresh=False))
         self.assertIsNone(self.runtime.devices[ADDRESS]["last_measurement"])
+
+    def test_esphome_remote_can_attempt_recovery_without_fabricating_a_sensor_sample(self):
+        self.runtime.transport = "esphome"
+        self.report("devices", available=0)
+        self.assertTrue(self.runtime.available(ADDRESS, fresh=False))
+        self.assertFalse(self.runtime.available(ADDRESS))
+        self.assertIsNone(self.runtime.devices[ADDRESS]["last_measurement"])
+        self.runtime.client.connected = False
+        self.assertFalse(self.runtime.available(ADDRESS, fresh=False))
 
     def test_short_octets_from_real_firmware_create_one_canonical_device(self):
         self.report(device="02:00:00:00:ab:0")

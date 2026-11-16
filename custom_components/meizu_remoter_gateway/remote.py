@@ -53,7 +53,8 @@ class MeizuRemote(MeizuEntity, RemoteEntity):
                 "commands": {device: sorted(names) for device, names in self.runtime.commands.get(self.address, {}).items()},
                 "transmission_confirmation": self.runtime.client.ir_confirmation,
                 "last_ir_result": self.runtime.last_ir_results.get(self.address),
-                "learning_over_tcp": "learn_v1" in self.runtime.client.capabilities,
+                "learning_transport": getattr(self.runtime, "transport", "tcp"),
+                "learning_over_tcp": "learn_v1" in self.runtime.client.capabilities and getattr(self.runtime, "transport", "tcp") == "tcp",
                 "learning": dict(self.runtime.learning) if self.runtime.learning and self.runtime.learning.get("address") == self.address else None}
 
     async def async_learn_command(self, **kwargs):
